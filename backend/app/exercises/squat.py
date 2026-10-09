@@ -196,7 +196,7 @@ class SquatExercise:
                     unit='deg',
                 ),
                 Measurement(
-                    metric=Metric.KNEE_ANGLE,
+                    metric=Metric.ASYMMETRY,
                     side=Side.EITHER,
                     phase=Phase.AT_BOTTOM,
                     value=features.knee_asymmetry,

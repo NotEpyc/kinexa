@@ -113,15 +113,16 @@ def extract_landmarks(result: mp_vision.PoseLandmarkerResult) -> Tuple[Optional[
     return norm, world
 
 
-def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
+def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, plane: str = 'sagittal') -> float:
     """
     Calculate angle between three points (p1-p2-p3) in degrees.
     
     Angle convention: 180° = straight (p1-p2-p3 collinear), 0° = fully flexed.
-    Uses vectors p2->p1 and p2->p3.
+    Uses vectors p2->p1 and p2->p3 projected to specified plane.
     
     Args:
-        p1, p2, p3: Points as (x, y) or (x, y, z) arrays
+        p1, p2, p3: Points as (x, y, z) arrays in world coordinates (meters)
+        plane: 'sagittal' (X-Z plane) for knee/hip flexion, 'frontal' (X-Y) for abduction
         
     Returns:
         Angle in degrees (0-180)
@@ -129,9 +130,18 @@ def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
     v1 = p1 - p2
     v2 = p3 - p2
     
-    # Use only x, y for 2D angle (or x, z for sagittal plane)
-    v1_2d = v1[:2]
-    v2_2d = v2[:2]
+    if plane == 'sagittal':
+        # Sagittal plane: X (anterior-posterior) and Z (vertical)
+        v1_2d = np.array([v1[0], v1[2]])
+        v2_2d = np.array([v2[0], v2[2]])
+    elif plane == 'frontal':
+        # Frontal plane: X (anterior-posterior) and Y (lateral)
+        v1_2d = np.array([v1[0], v1[1]])
+        v2_2d = np.array([v2[0], v2[1]])
+    else:
+        # Default to X-Y
+        v1_2d = v1[:2]
+        v2_2d = v2[:2]
     
     cos_angle = np.dot(v1_2d, v2_2d) / (np.linalg.norm(v1_2d) * np.linalg.norm(v2_2d))
     cos_angle = np.clip(cos_angle, -1.0, 1.0)
@@ -142,7 +152,7 @@ def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
 
 def calculate_knee_angle(world_landmarks: np.ndarray, side: str = 'left') -> float:
     """
-    Calculate knee angle from world landmarks.
+    Calculate knee angle from world landmarks using sagittal plane (X-Z).
     
     Args:
         world_landmarks: (33, 3) array from extract_landmarks
@@ -156,17 +166,17 @@ def calculate_knee_angle(world_landmarks: np.ndarray, side: str = 'left') -> flo
     else:
         hip, knee, ankle = LANDMARKS['right_hip'], LANDMARKS['right_knee'], LANDMARKS['right_ankle']
     
-    return calculate_angle(world_landmarks[hip], world_landmarks[knee], world_landmarks[ankle])
+    return calculate_angle(world_landmarks[hip], world_landmarks[knee], world_landmarks[ankle], plane='sagittal')
 
 
 def calculate_hip_angle(world_landmarks: np.ndarray, side: str = 'left') -> float:
-    """Calculate hip angle (shoulder-hip-knee)."""
+    """Calculate hip angle (shoulder-hip-knee) in sagittal plane (X-Z)."""
     if side == 'left':
         shoulder, hip, knee = LANDMARKS['left_shoulder'], LANDMARKS['left_hip'], LANDMARKS['left_knee']
     else:
         shoulder, hip, knee = LANDMARKS['right_shoulder'], LANDMARKS['right_hip'], LANDMARKS['right_knee']
     
-    return calculate_angle(world_landmarks[shoulder], world_landmarks[hip], world_landmarks[knee])
+    return calculate_angle(world_landmarks[shoulder], world_landmarks[hip], world_landmarks[knee], plane='sagittal')
 
 
 def calculate_trunk_lean(world_landmarks: np.ndarray) -> float:

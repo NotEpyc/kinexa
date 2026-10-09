@@ -2,8 +2,15 @@
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import uuid
+import tempfile
+import os
+import shutil
+
+from app.exercises.squat import SquatExercise
+from app.rules.engine import RulesEngine, Parameter, Metric, Side, Phase
+from app.models.loader import get_model_loader
 
 router = APIRouter()
 
@@ -31,6 +38,74 @@ class AnalyzeResponse(BaseModel):
     warnings: list[str] = []
 
 
+def _build_rules_engine(patient_id: str, exercise: str) -> RulesEngine:
+    """
+    Build RulesEngine from patient_exercise_parameters.
+    TODO: Replace with actual DB query.
+    For now, return default population limits.
+    """
+    # Default population limits for squat
+    defaults = [
+        Parameter(
+            id="default_knee_min",
+            plan_id="default",
+            metric="knee_angle",
+            side="either",
+            phase="at_bottom",
+            min_value=90.0,
+            max_value=None,
+            unit="deg",
+            tolerance=5.0,
+            effective_from="2024-01-01T00:00:00",
+            effective_to=None,
+            version=1,
+        ),
+        Parameter(
+            id="default_knee_max",
+            plan_id="default",
+            metric="knee_angle",
+            side="either",
+            phase="at_bottom",
+            min_value=None,
+            max_value=130.0,
+            unit="deg",
+            tolerance=5.0,
+            effective_from="2024-01-01T00:00:00",
+            effective_to=None,
+            version=1,
+        ),
+        Parameter(
+            id="default_trunk_max",
+            plan_id="default",
+            metric="trunk_lean",
+            side="either",
+            phase="at_bottom",
+            min_value=None,
+            max_value=25.0,
+            unit="deg",
+            tolerance=3.0,
+            effective_from="2024-01-01T00:00:00",
+            effective_to=None,
+            version=1,
+        ),
+        Parameter(
+            id="default_asym_max",
+            plan_id="default",
+            metric="asymmetry",
+            side="either",
+            phase="at_bottom",
+            min_value=None,
+            max_value=10.0,
+            unit="deg",
+            tolerance=2.0,
+            effective_from="2024-01-01T00:00:00",
+            effective_to=None,
+            version=1,
+        ),
+    ]
+    return RulesEngine(defaults)
+
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_video(
     video: UploadFile = File(...),
@@ -39,28 +114,163 @@ async def analyze_video(
 ):
     """
     Upload video + patient_id + exercise; returns per-rep analysis.
+    
+    Pipeline:
+    1. Validate video (type, size, duration)
+    2. Save to temp file
+    3. Run squat analysis pipeline (MediaPipe → angles → reps → features → rules)
+    4. Apply decision table (rules override ML)
+    5. Return structured JSON
     """
-    # TODO: Validate file type (MP4/MOV/WebM), size (≤100 MB), duration (≤60s)
-    # TODO: Save video to temp/storage
-    # TODO: Run pipeline: MediaPipe → landmarks → angles → reps → features
-    # TODO: Load patient_exercise_parameters for ROM limits
-    # TODO: Run ML model (RF/XGBoost)
-    # TODO: Apply decision table (FR-7.3)
-    # TODO: Store analysis + rep_results in PostgreSQL
-    # TODO: Return structured JSON
-
-    # Placeholder response matching PRD §9 example
-    return AnalyzeResponse(
-        analysis_id=str(uuid.uuid4())[:8],
-        exercise=exercise,
-        model_version="squat_rf_v0",
-        total_reps=0,
-        correct_reps=0,
-        incorrect_reps=0,
-        score=0,
-        reps=[],
-        warnings=["Pipeline not yet implemented"],
-    )
+    # 1. Validate file type
+    allowed_types = {"video/mp4", "video/quicktime", "video/webm"}
+    if video.content_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: MP4, MOV, WebM. Got: {video.content_type}"
+        )
+    
+    # 2. Check file size (max 100 MB)
+    max_size = 100 * 1024 * 1024  # 100 MB
+    content = await video.read()
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size: 100 MB. Got: {len(content) / (1024*1024):.1f} MB"
+        )
+    
+    # 3. Save to temp file
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"kinexa_{uuid.uuid4().hex}_{video.filename}")
+    
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(content)
+        
+        # 4. Run analysis pipeline
+        if exercise != "squat":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Exercise '{exercise}' not supported. Only 'squat' in v1."
+            )
+        
+        # Initialize pipeline
+        model_path = os.path.join("backend", "models", "pose_landmarker_full.task")
+        if not os.path.exists(model_path):
+            raise HTTPException(
+                status_code=500,
+                detail="MediaPipe model not found. Run download_model.py first."
+            )
+        
+        squat_exercise = SquatExercise(model_path=model_path)
+        rules_engine = _build_rules_engine(patient_id, exercise)
+        
+        # Run analysis
+        result = squat_exercise.analyze_video(temp_path, rules_engine)
+        
+        # Check for no assessable reps
+        if not result.reps:
+            if result.total_frames == 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "NO_PERSON_DETECTED",
+                        "message": "No person detected in video. Ensure full body is visible, camera at hip height, side view.",
+                        "warnings": result.warnings
+                    }
+                )
+            elif result.frames and not result.reps:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "NO_REPS_FOUND",
+                        "message": "No valid reps detected. Check squat depth and form.",
+                        "warnings": result.warnings
+                    }
+                )
+        
+        # Convert to response format
+        rep_results = []
+        correct_count = 0
+        incorrect_count = 0
+        
+        for assessment in result.reps:
+            # Build measurements dict
+            measurements_dict = {}
+            for m in assessment.measurements:
+                key = f"{m.metric.value}_{m.side.value}_{m.phase.value}"
+                measurements_dict[key] = {
+                    "value": m.value,
+                    "unit": m.unit
+                }
+            
+            # Convert flags to issues
+            issues = []
+            for flag in assessment.flags:
+                issues.append({
+                    "code": flag.code,
+                    "message": flag.message,
+                    "severity": flag.severity.value
+                })
+            
+            # Determine status string
+            status_map = {
+                "pass": "correct",
+                "flag": "incorrect",
+                "advisory": "needs_attention",
+                "not_assessable": "not_assessable"
+            }
+            status_str = status_map.get(assessment.status.value, "not_assessable")
+            
+            if status_str == "correct":
+                correct_count += 1
+            elif status_str == "incorrect":
+                incorrect_count += 1
+            
+            # Get timestamps from feature extraction (stored in assessment)
+            # For now, use rep index to estimate - TODO: store actual timestamps
+            rep_result = RepResult(
+                rep=assessment.rep_index + 1,
+                status=status_str,
+                start_s=0.0,  # TODO: get from feature timestamps
+                bottom_s=0.0,
+                end_s=0.0,
+                measurements=measurements_dict,
+                ml=assessment.ml_output,
+                issues=[i["message"] for i in issues]
+            )
+            rep_results.append(rep_result)
+        
+        # Calculate score (percentage of correct reps)
+        total = len(rep_results)
+        score = int((correct_count / total * 100)) if total > 0 else 0
+        
+        return AnalyzeResponse(
+            analysis_id=str(uuid.uuid4())[:8],
+            exercise=exercise,
+            model_version="squat_rules_v0",  # Rules-first, no ML yet
+            total_reps=total,
+            correct_reps=correct_count,
+            incorrect_reps=incorrect_count,
+            score=score,
+            reps=rep_results,
+            warnings=result.warnings,
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Analysis failed: {str(e)}"
+        )
+    finally:
+        # Cleanup temp file
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
 
 
 @router.get("/analyses/{analysis_id}")

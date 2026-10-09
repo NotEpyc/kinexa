@@ -76,7 +76,7 @@ def extract_squat_features(
     min_left_knee = float(np.min(knee_angles_left[start:end+1]))
     min_right_knee = float(np.min(knee_angles_right[start:end+1]))
     
-    # Asymmetry at bottom
+    # Asymmetry at bottom (difference between left and right knee angles at bottom)
     knee_asymmetry = float(abs(knee_angles_left[bottom] - knee_angles_right[bottom]))
     
     # Hip flexion at bottom
@@ -112,25 +112,27 @@ def extract_squat_features(
         descent_time=descent_time,
         ascent_time=ascent_time,
         smoothness=smoothness,
-        start_frame=0,  # Will be set by caller
-        bottom_frame=0,
-        end_frame=0,
-        start_time=0.0,
-        bottom_time=0.0,
-        end_time=0.0,
+        start_frame=start,
+        bottom_frame=bottom,
+        end_frame=end,
+        start_time=timestamps[start],
+        bottom_time=timestamps[bottom],
+        end_time=timestamps[end],
     )
 
 
 def detect_reps(knee_angles: np.ndarray, timestamps: np.ndarray, 
-                min_depth_deg: float = 30.0, min_spacing_frames: int = 15) -> List[tuple]:
+                min_depth_deg: float = 30.0, min_spacing_frames: int = 15,
+                standing_threshold: float = 170.0) -> List[tuple]:
     """
-    Detect reps from knee angle signal using valley detection.
+    Detect reps from knee angle signal using valley detection with proper boundary detection.
     
     Args:
         knee_angles: Knee angle time series (degrees, 180=straight)
         timestamps: Frame timestamps (seconds)
-        min_depth_deg: Minimum knee flexion depth to count as rep
+        min_depth_deg: Minimum knee flexion depth to count as rep (degrees from straight)
         min_spacing_frames: Minimum frames between reps
+        standing_threshold: Angle (degrees) considered "standing" (near 180°)
         
     Returns:
         List of (start_idx, bottom_idx, end_idx) tuples
@@ -138,27 +140,61 @@ def detect_reps(knee_angles: np.ndarray, timestamps: np.ndarray,
     from scipy.signal import find_peaks
     
     # Invert: valleys in knee angle = peaks in inverted signal
+    # Valley = knee flexion (lower angle), so inverted = 180 - angle gives peaks at valleys
     inverted = 180 - knee_angles
     
-    # Find valleys (peaks in inverted)
+    # Find valleys (peaks in inverted signal = deepest flexion points)
     peaks, properties = find_peaks(
         inverted,
-        height=min_depth_deg,  # Minimum flexion depth
+        height=min_depth_deg,  # Minimum flexion depth from straight
         distance=min_spacing_frames,
         prominence=min_depth_deg / 2,
     )
     
+    if len(peaks) == 0:
+        return []
+    
     reps = []
     for peak_idx in peaks:
-        # Find start (previous local max before descent)
-        # and end (next local max after ascent)
-        # Simplified: use fixed window around peak
-        window = int(2.0 * 30)  # ~2 seconds at 30fps
-        start = max(0, peak_idx - window)
-        end = min(len(knee_angles) - 1, peak_idx + window)
+        # Find start: go backward from peak to where angle crosses standing_threshold (going up)
+        start_idx = peak_idx
+        for i in range(peak_idx, 0, -1):
+            if knee_angles[i] >= standing_threshold and knee_angles[i-1] < standing_threshold:
+                start_idx = i
+                break
+            # Also stop if we hit another peak (local max in inverted = valley in original)
+            if i > 0 and inverted[i-1] > inverted[i]:
+                # We're going up towards another peak, stop
+                if i < peak_idx - 5:  # Don't stop immediately
+                    start_idx = i
+                    break
         
-        # Refine: find actual start/end where angle crosses 170° (near standing)
-        # This is a simplified version
-        reps.append((start, peak_idx, end))
+        # Find end: go forward from peak to where angle crosses standing_threshold (going down)
+        end_idx = peak_idx
+        for i in range(peak_idx, len(knee_angles) - 1):
+            if knee_angles[i] >= standing_threshold and knee_angles[i+1] < standing_threshold:
+                end_idx = i
+                break
+            # Also stop if we hit another peak
+            if i < len(knee_angles) - 1 and inverted[i+1] > inverted[i]:
+                if i > peak_idx + 5:
+                    end_idx = i
+                    break
+        
+        # Ensure minimum rep duration (at least 0.5 seconds)
+        min_frames = max(5, int(0.5 * 30))  # Assume ~30fps
+        if end_idx - start_idx < min_frames:
+            # Too short, skip or extend
+            continue
+            
+        reps.append((start_idx, peak_idx, end_idx))
     
-    return reps
+    # Filter out reps that are too close together (enforce min_spacing_frames)
+    filtered_reps = []
+    for rep in reps:
+        if not filtered_reps:
+            filtered_reps.append(rep)
+        elif rep[0] - filtered_reps[-1][2] >= min_spacing_frames:
+            filtered_reps.append(rep)
+    
+    return filtered_reps
