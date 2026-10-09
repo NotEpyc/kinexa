@@ -137,89 +137,65 @@ async def analyze_video(
             detail=f"Invalid file type. Allowed: MP4, MOV, WebM. Got: {video.content_type}"
         )
     
-    # 2. Check file size (max 100 MB) - read in chunks to avoid loading entire file
+    # Stream the upload to a temporary file while enforcing the size limit.
     max_size = 100 * 1024 * 1024  # 100 MB
-    content = bytearray()
-    chunk_size = 1024 * 1024  # 1 MB chunks
-    while True:
-    # 2. Stream upload to temp file with size check
-
-    max_size = 100 * 1024 * 1024  # 100 MB
-
-    temp_dir = tempfile.gettempdir()
-
-    temp_path = os.path.join(temp_dir, f"kinexa_{uuid.uuid4().hex}_{video.filename}")
-
-
+    chunk_size = 1024 * 1024  # 1 MB
+    safe_filename = os.path.basename(video.filename or "upload")
+    temp_path = os.path.join(
+        tempfile.gettempdir(), f"kinexa_{uuid.uuid4().hex}_{safe_filename}"
+    )
 
     try:
-
         total_size = 0
-
-        chunk_size = 1024 * 1024  # 1 MB
-
-        with open(temp_path, "wb") as f:
-
+        with open(temp_path, "wb") as temp_file:
             while True:
-
                 chunk = await video.read(chunk_size)
-
                 if not chunk:
-
                     break
 
-                f.write(chunk)
-
                 total_size += len(chunk)
-
                 if total_size > max_size:
-
                     raise HTTPException(
-
                         status_code=400,
-
-                        detail=f"File too large. Maximum size: 100 MB. Got: {total_size / (1024*1024):.1f} MB"
-
+                        detail="File too large. Maximum size: 100 MB.",
                     )
+                temp_file.write(chunk)
 
-
-
-        # 3. Validate video duration (max 60 seconds) - quick check via OpenCV
-
+        # Validate that OpenCV can read the video and enforce the duration limit.
         cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
+            cap.release()
+            raise HTTPException(status_code=400, detail="Uploaded file is not a readable video.")
 
-        if cap.isOpened():
-
+        try:
             fps = cap.get(cv2.CAP_PROP_FPS)
-
             frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-
             if fps > 0 and frame_count > 0:
-
                 duration = frame_count / fps
-
                 if duration > 60:
-
-                    cap.release()
-
                     raise HTTPException(
-
                         status_code=400,
-
-                        detail=f"Video too long. Maximum duration: 60 seconds. Got: {duration:.1f} seconds"
-
+                        detail=f"Video too long. Maximum duration: 60 seconds. Got: {duration:.1f} seconds",
                     )
-
+        finally:
             cap.release()
 
+        if exercise != "squat":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Exercise '{exercise}' not supported. Only 'squat' in v1.",
             )
-        
-        # Initialize pipeline
-        # Model is at project_root/backend/models/pose_landmarker_full.task
-        # __file__ = backend/app/routes/analyze.py
-        # Need to go up 3 levels: routes -> app -> backend -> project_root
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        model_path = os.path.join(project_root, "models", "pose_landmarker_full.task")
+
+        # analyze.py -> routes -> app -> backend; model bundle is under backend/models.
+        backend_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        model_path = os.path.join(backend_root, "models", "pose_landmarker_full.task")
+        if not os.path.isfile(model_path):
+            raise HTTPException(
+                status_code=500,
+                detail="MediaPipe model not found at backend/models/pose_landmarker_full.task.",
+            )
         
         squat_exercise = SquatExercise(model_path=model_path)
         rules_engine = _build_rules_engine(patient_id, exercise)
@@ -295,7 +271,7 @@ async def analyze_video(
                 end_s=assessment.end_time,
                 measurements=measurements_dict,
                 ml=assessment.ml_output,
-                issues=[i["message"] for i in issues]
+                issues=[IssueDetail(**issue) for issue in issues]
             )
             rep_results.append(rep_result)
         

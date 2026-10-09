@@ -122,7 +122,7 @@ def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, plane: str =
     
     Args:
         p1, p2, p3: Points as (x, y, z) arrays in world coordinates (meters)
-        plane: 'sagittal' (X-Z plane) for knee/hip flexion, 'frontal' (X-Y) for abduction
+        plane: 'sagittal' (Y-Z plane) for knee/hip flexion, 'frontal' (X-Y) for abduction
         
     Returns:
         Angle in degrees (0-180)
@@ -131,11 +131,11 @@ def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, plane: str =
     v2 = p3 - p2
     
     if plane == 'sagittal':
-        # Sagittal plane: X (anterior-posterior) and Z (vertical)
-        v1_2d = np.array([v1[0], v1[2]])
-        v2_2d = np.array([v2[0], v2[2]])
+        # Y is vertical and Z is anterior-posterior depth; X is lateral.
+        v1_2d = np.array([v1[2], v1[1]])
+        v2_2d = np.array([v2[2], v2[1]])
     elif plane == 'frontal':
-        # Frontal plane: X (anterior-posterior) and Y (lateral)
+        # Frontal plane: X (lateral) and Y (vertical).
         v1_2d = np.array([v1[0], v1[1]])
         v2_2d = np.array([v2[0], v2[1]])
     else:
@@ -152,7 +152,7 @@ def calculate_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray, plane: str =
 
 def calculate_knee_angle(world_landmarks: np.ndarray, side: str = 'left') -> float:
     """
-    Calculate knee angle from world landmarks using sagittal plane (X-Z).
+    Calculate knee angle from world landmarks using sagittal plane (Y-Z).
     
     Args:
         world_landmarks: (33, 3) array from extract_landmarks
@@ -170,7 +170,7 @@ def calculate_knee_angle(world_landmarks: np.ndarray, side: str = 'left') -> flo
 
 
 def calculate_hip_angle(world_landmarks: np.ndarray, side: str = 'left') -> float:
-    """Calculate hip angle (shoulder-hip-knee) in sagittal plane (X-Z)."""
+    """Calculate hip angle (shoulder-hip-knee) in sagittal plane (Y-Z)."""
     if side == 'left':
         shoulder, hip, knee = LANDMARKS['left_shoulder'], LANDMARKS['left_hip'], LANDMARKS['left_knee']
     else:
@@ -188,11 +188,13 @@ def calculate_trunk_lean(world_landmarks: np.ndarray) -> float:
     # Vector from mid-hip to mid-shoulder
     trunk_vec = mid_shoulder - mid_hip
     
-    # Vertical is Y-up in MediaPipe world coordinates
-    vertical = np.array([0.0, 1.0, 0.0])
-    
-    # Angle between trunk vector and vertical (3D angle)
-    cos_angle = np.dot(trunk_vec, vertical) / (np.linalg.norm(trunk_vec) * np.linalg.norm(vertical))
+    # Project onto the sagittal Y-Z plane so lateral motion does not count as
+    # forward trunk lean. Y is vertical; Z is anterior-posterior depth.
+    trunk_sagittal = np.array([trunk_vec[2], trunk_vec[1]])
+    vertical_sagittal = np.array([0.0, 1.0])
+    cos_angle = np.dot(trunk_sagittal, vertical_sagittal) / (
+        np.linalg.norm(trunk_sagittal) * np.linalg.norm(vertical_sagittal)
+    )
     cos_angle = np.clip(cos_angle, -1.0, 1.0)
     angle = np.degrees(np.arccos(cos_angle))
     
