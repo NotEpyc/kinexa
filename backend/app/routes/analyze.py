@@ -16,6 +16,12 @@ from app.models.loader import get_model_loader
 router = APIRouter()
 
 
+class IssueDetail(BaseModel):
+    code: str
+    message: str
+    severity: str
+
+
 class RepResult(BaseModel):
     rep: int
     status: str  # "correct" | "incorrect" | "not_assessable"
@@ -24,7 +30,7 @@ class RepResult(BaseModel):
     end_s: float
     measurements: dict
     ml: Optional[dict] = None
-    issues: list[str] = []
+    issues: list[IssueDetail] = []
 
 
 class AnalyzeResponse(BaseModel):
@@ -136,49 +142,83 @@ async def analyze_video(
     content = bytearray()
     chunk_size = 1024 * 1024  # 1 MB chunks
     while True:
-        chunk = await video.read(chunk_size)
-        if not chunk:
-            break
-        content.extend(chunk)
-        if len(content) > max_size:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File too large. Maximum size: 100 MB. Got: {len(content) / (1024*1024):.1f} MB"
-            )
-    
-    # 3. Validate video duration (max 60 seconds) - quick check via OpenCV
+    # 2. Stream upload to temp file with size check
+
+    max_size = 100 * 1024 * 1024  # 100 MB
+
     temp_dir = tempfile.gettempdir()
+
     temp_path = os.path.join(temp_dir, f"kinexa_{uuid.uuid4().hex}_{video.filename}")
-    
+
+
+
     try:
+
+        total_size = 0
+
+        chunk_size = 1024 * 1024  # 1 MB
+
         with open(temp_path, "wb") as f:
-            f.write(content)
-        
-        # Quick duration check
-        cap = cv2.VideoCapture(temp_path)
-        if cap.isOpened():
-            fps = cap.get(cv2.CAP_PROP_FPS)
-            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-            if fps > 0 and frame_count > 0:
-                duration = frame_count / fps
-                if duration > 60:
+
+            while True:
+
+                chunk = await video.read(chunk_size)
+
+                if not chunk:
+
+                    break
+
+                f.write(chunk)
+
+                total_size += len(chunk)
+
+                if total_size > max_size:
+
                     raise HTTPException(
+
                         status_code=400,
-                        detail=f"Video too long. Maximum duration: 60 seconds. Got: {duration:.1f} seconds"
+
+                        detail=f"File too large. Maximum size: 100 MB. Got: {total_size / (1024*1024):.1f} MB"
+
                     )
-        cap.release()
-        
-        # 4. Run analysis pipeline
-        if exercise != "squat":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Exercise '{exercise}' not supported. Only 'squat' in v1."
+
+
+
+        # 3. Validate video duration (max 60 seconds) - quick check via OpenCV
+
+        cap = cv2.VideoCapture(temp_path)
+
+        if cap.isOpened():
+
+            fps = cap.get(cv2.CAP_PROP_FPS)
+
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+
+            if fps > 0 and frame_count > 0:
+
+                duration = frame_count / fps
+
+                if duration > 60:
+
+                    cap.release()
+
+                    raise HTTPException(
+
+                        status_code=400,
+
+                        detail=f"Video too long. Maximum duration: 60 seconds. Got: {duration:.1f} seconds"
+
+                    )
+
+            cap.release()
+
             )
         
         # Initialize pipeline
         # Model is at project_root/backend/models/pose_landmarker_full.task
-        # When running from backend/, we need to go up one level
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # __file__ = backend/app/routes/analyze.py
+        # Need to go up 3 levels: routes -> app -> backend -> project_root
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         model_path = os.path.join(project_root, "models", "pose_landmarker_full.task")
         
         squat_exercise = SquatExercise(model_path=model_path)

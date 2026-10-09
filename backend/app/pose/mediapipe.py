@@ -187,12 +187,13 @@ def calculate_trunk_lean(world_landmarks: np.ndarray) -> float:
     
     # Vector from mid-hip to mid-shoulder
     trunk_vec = mid_shoulder - mid_hip
-    vertical = np.array([0.0, 1.0, 0.0])  # Y-up
     
-    # Project to sagittal plane (X-Z)
-    trunk_sagittal = np.array([trunk_vec[0], trunk_vec[2]])
-    vertical_sagittal = np.array([0.0, 1.0])
+    # Vertical is Y-up in MediaPipe world coordinates
+    vertical = np.array([0.0, 1.0, 0.0])
     
-    cos_angle = np.dot(trunk_sagittal, vertical_sagittal) / (np.linalg.norm(trunk_sagittal) * np.linalg.norm(vertical_sagittal))
+    # Angle between trunk vector and vertical (3D angle)
+    cos_angle = np.dot(trunk_vec, vertical) / (np.linalg.norm(trunk_vec) * np.linalg.norm(vertical))
     cos_angle = np.clip(cos_angle, -1.0, 1.0)
-    return float(np.degrees(np.arccos(cos_angle)))
+    angle = np.degrees(np.arccos(cos_angle))
+    
+    return float(angle)
