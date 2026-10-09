@@ -1,27 +1,28 @@
 # Core
 fastapi==0.111.0
 uvicorn[standard]==0.30.1
-pydantic==2.7.4
+pydantic==2.10.0
 pydantic-settings==2.3.4
 
-# Database
-sqlalchemy==2.0.30
+# Database (SQLite for dev, PostgreSQL for prod)
+sqlalchemy==2.0.35
 alembic==1.13.1
-asyncpg==0.29.0
-psycopg2-binary==2.9.9
+asyncpg==0.30.0
+psycopg==3.2.8
+# aiosqlite==0.19.0  # uncomment for SQLite dev
 
 # MediaPipe
-mediapipe==0.10.14
+mediapipe==0.10.35
 
 # Computer Vision
 opencv-python==4.10.0.84
-numpy==1.26.4
-scipy==1.13.1
+numpy==2.2.6
+scipy==1.14.1
 
 # ML
-scikit-learn==1.5.0
+scikit-learn==1.5.2
 xgboost==2.0.3
-pandas==2.2.2
+pandas==2.2.3
 
 # Config
 python-dotenv==1.0.1
