@@ -61,12 +61,12 @@ class PoseExtractor:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
         return self.landmarker.detect_for_video(mp_image, timestamp_ms)
 
-    def process_video(self, video_path: str) -> Generator[Tuple[int, mp_vision.PoseLandmarkerResult], None, None]:
+    def process_video(self, video_path: str) -> Generator[Tuple[int, mp_vision.PoseLandmarkerResult, float], None, None]:
         """
         Process video frame by frame.
         
         Yields:
-            (frame_index, PoseLandmarkerResult)
+            (frame_index, PoseLandmarkerResult, timestamp_seconds)
         """
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -87,7 +87,7 @@ class PoseExtractor:
             timestamp_ms = int(frame_idx * 1000 / fps)
 
             result = self.process_frame(frame_rgb, timestamp_ms)
-            yield frame_idx, result
+            yield frame_idx, result, frame_idx / fps
 
             frame_idx += 1
 

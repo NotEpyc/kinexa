@@ -81,6 +81,10 @@ class RepAssessment:
     measurements: List[Measurement]
     ml_output: Optional[dict] = None
     flags: List[Flag] = None
+    # Timestamps from feature extraction
+    start_time: float = 0.0
+    bottom_time: float = 0.0
+    end_time: float = 0.0
     
     def __post_init__(self):
         if self.flags is None:
@@ -117,14 +121,15 @@ class RulesEngine:
         flags = []
         
         for measurement in measurements:
-            # Find matching therapist parameter
-            param = self._find_parameter(measurement)
+            # Find all matching therapist parameters
+            params = self._find_parameters(measurement)
             
-            if param:
-                # Therapist limit exists - evaluate against it
-                flag = self._check_against_parameter(measurement, param)
-                if flag:
-                    flags.append(flag)
+            if params:
+                # Therapist limits exist - evaluate against each
+                for param in params:
+                    flag = self._check_against_parameter(measurement, param)
+                    if flag:
+                        flags.append(flag)
             else:
                 # No therapist limit - use default
                 flag = self._check_against_default(measurement)
@@ -150,14 +155,15 @@ class RulesEngine:
             flags=flags,
         )
     
-    def _find_parameter(self, measurement: Measurement) -> Optional[Parameter]:
-        """Find matching therapist parameter for a measurement."""
+    def _find_parameters(self, measurement: Measurement) -> List[Parameter]:
+        """Find all matching therapist parameters for a measurement."""
+        matches = []
         for param in self.parameters:
             if (param.metric == measurement.metric and
                 (param.side == measurement.side or param.side == Side.EITHER) and
                 param.phase == measurement.phase):
-                return param
-        return None
+                matches.append(param)
+        return matches
     
     def _check_against_parameter(self, measurement: Measurement, param: Parameter) -> Optional[Flag]:
         """Check measurement against therapist parameter."""

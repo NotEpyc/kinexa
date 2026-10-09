@@ -98,7 +98,7 @@ class SquatExercise:
         frames = []
         
         # 1. Pose extraction on every frame
-        for frame_idx, result in self.pose_extractor.process_video(video_path):
+        for frame_idx, result, timestamp in self.pose_extractor.process_video(video_path):
             norm, world = extract_landmarks(result)
             
             if norm is None or world is None:
@@ -117,9 +117,6 @@ class SquatExercise:
             left_hip = calculate_hip_angle(world, 'left')
             right_hip = calculate_hip_angle(world, 'right')
             trunk_lean = calculate_trunk_lean(world)
-            
-            # Get timestamp from MediaPipe result
-            timestamp = result.timestamp_ms / 1000.0
             
             frames.append(FrameData(
                 frame_idx=frame_idx,
@@ -237,6 +234,10 @@ class SquatExercise:
                     ml_output=ml_output,
                 )
             
+            # Pass timestamps from features
+            assessment.start_time = features.start_time
+            assessment.bottom_time = features.bottom_time
+            assessment.end_time = features.end_time
             assessment.rep_index = rep_idx
             reps.append(assessment)
         

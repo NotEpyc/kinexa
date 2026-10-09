@@ -7,6 +7,7 @@ import uuid
 import tempfile
 import os
 import shutil
+import cv2
 
 from app.exercises.squat import SquatExercise
 from app.rules.engine import RulesEngine, Parameter, Metric, Side, Phase
@@ -130,22 +131,42 @@ async def analyze_video(
             detail=f"Invalid file type. Allowed: MP4, MOV, WebM. Got: {video.content_type}"
         )
     
-    # 2. Check file size (max 100 MB)
+    # 2. Check file size (max 100 MB) - read in chunks to avoid loading entire file
     max_size = 100 * 1024 * 1024  # 100 MB
-    content = await video.read()
-    if len(content) > max_size:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Maximum size: 100 MB. Got: {len(content) / (1024*1024):.1f} MB"
-        )
+    content = bytearray()
+    chunk_size = 1024 * 1024  # 1 MB chunks
+    while True:
+        chunk = await video.read(chunk_size)
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large. Maximum size: 100 MB. Got: {len(content) / (1024*1024):.1f} MB"
+            )
     
-    # 3. Save to temp file
+    # 3. Validate video duration (max 60 seconds) - quick check via OpenCV
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, f"kinexa_{uuid.uuid4().hex}_{video.filename}")
     
     try:
         with open(temp_path, "wb") as f:
             f.write(content)
+        
+        # Quick duration check
+        cap = cv2.VideoCapture(temp_path)
+        if cap.isOpened():
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            if fps > 0 and frame_count > 0:
+                duration = frame_count / fps
+                if duration > 60:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Video too long. Maximum duration: 60 seconds. Got: {duration:.1f} seconds"
+                    )
+        cap.release()
         
         # 4. Run analysis pipeline
         if exercise != "squat":
@@ -155,12 +176,10 @@ async def analyze_video(
             )
         
         # Initialize pipeline
-        model_path = os.path.join("backend", "models", "pose_landmarker_full.task")
-        if not os.path.exists(model_path):
-            raise HTTPException(
-                status_code=500,
-                detail="MediaPipe model not found. Run download_model.py first."
-            )
+        # Model is at project_root/backend/models/pose_landmarker_full.task
+        # When running from backend/, we need to go up one level
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        model_path = os.path.join(project_root, "models", "pose_landmarker_full.task")
         
         squat_exercise = SquatExercise(model_path=model_path)
         rules_engine = _build_rules_engine(patient_id, exercise)
@@ -204,7 +223,7 @@ async def analyze_video(
                     "unit": m.unit
                 }
             
-            # Convert flags to issues
+            # Convert flags to issues (include codes)
             issues = []
             for flag in assessment.flags:
                 issues.append({
@@ -228,13 +247,12 @@ async def analyze_video(
                 incorrect_count += 1
             
             # Get timestamps from feature extraction (stored in assessment)
-            # For now, use rep index to estimate - TODO: store actual timestamps
             rep_result = RepResult(
                 rep=assessment.rep_index + 1,
                 status=status_str,
-                start_s=0.0,  # TODO: get from feature timestamps
-                bottom_s=0.0,
-                end_s=0.0,
+                start_s=assessment.start_time,
+                bottom_s=assessment.bottom_time,
+                end_s=assessment.end_time,
                 measurements=measurements_dict,
                 ml=assessment.ml_output,
                 issues=[i["message"] for i in issues]
