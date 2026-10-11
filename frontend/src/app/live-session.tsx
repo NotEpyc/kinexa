@@ -13,11 +13,14 @@ type Rep = {
   duration: number;
   verdict: 'within range' | 'outside range' | 'range not set' | 'not assessable';
   cue: string;
+  model: { status: 'checking' | 'available' | 'unavailable'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
 type RepSample = {
   time: number;
   leftKnee: number | null;
   rightKnee: number | null;
+  leftHip: number | null;
+  rightHip: number | null;
   primaryKnee: number;
   trunkLean: number | null;
 };
@@ -65,6 +68,76 @@ function hasReliableKnee(screen: Point[], indices: [number, number, number]) {
   return indices.every((index) => (screen[index]?.visibility ?? 0) >= KNEE_LANDMARK_VISIBILITY_THRESHOLD);
 }
 
+function gradient(values: number[], times: number[]) {
+  return values.map((value, index) => {
+    if (index === 0) return (values[1] - value) / (times[1] - times[0]);
+    if (index === values.length - 1) return (value - values[index - 1]) / (times[index] - times[index - 1]);
+    const before = times[index] - times[index - 1];
+    const after = times[index + 1] - times[index];
+    if (before <= 0 || after <= 0) return 0;
+    return (-after / (before * (before + after))) * values[index - 1]
+      + ((after - before) / (before * after)) * value
+      + (before / (after * (before + after))) * values[index + 1];
+  });
+}
+
+function makeSquatModelFeatures(samples: RepSample[]) {
+  const kneeSamples = samples.filter((sample) => sample.leftKnee !== null && sample.rightKnee !== null);
+  const hipSamples = samples.filter((sample) => sample.leftHip !== null && sample.rightHip !== null);
+  const trunkSamples = samples.filter((sample) => sample.trunkLean !== null);
+  if (kneeSamples.length < 5 || hipSamples.length < 1 || trunkSamples.length < 1) return null;
+
+  const bottom = kneeSamples.reduce((lowest, sample) => sample.primaryKnee < lowest.primaryKnee ? sample : lowest);
+  const startTime = samples[0]?.time;
+  const endTime = samples.at(-1)?.time;
+  if (startTime === undefined || endTime === undefined || endTime <= startTime) return null;
+  const nearestTrunk = trunkSamples.reduce((nearest, sample) => Math.abs(sample.time - bottom.time) < Math.abs(nearest.time - bottom.time) ? sample : nearest);
+  const times = kneeSamples.map((sample) => sample.time);
+  const leftAngles = kneeSamples.map((sample) => sample.leftKnee as number);
+  if (times.length < 5) return null;
+  const velocity = gradient(leftAngles, times);
+  const acceleration = gradient(velocity, times);
+  const jerk = gradient(acceleration, times);
+  const meanJerk = jerk.reduce((sum, value) => sum + value, 0) / jerk.length;
+  const jerkVariance = jerk.reduce((sum, value) => sum + (value - meanJerk) ** 2, 0) / jerk.length;
+  return {
+    min_left_knee_angle: Math.min(...leftAngles),
+    min_right_knee_angle: Math.min(...kneeSamples.map((sample) => sample.rightKnee as number)),
+    knee_asymmetry: Math.abs((bottom.leftKnee as number) - (bottom.rightKnee as number)),
+    min_hip_angle: Math.min(...hipSamples.flatMap((sample) => [sample.leftHip as number, sample.rightHip as number])),
+    max_trunk_lean: Math.max(...trunkSamples.map((sample) => sample.trunkLean as number)),
+    trunk_lean_at_bottom: nearestTrunk.trunkLean as number,
+    duration: endTime - startTime,
+    descent_time: Math.max(0, bottom.time - startTime),
+    ascent_time: Math.max(0, endTime - bottom.time),
+    smoothness: Math.sqrt(jerkVariance),
+  };
+}
+
+async function requestExerciseModel(exercise: string, features: Record<string, number> | null) {
+  if (!features) return { status: 'unavailable' as const, reason: 'Not enough clearly visible samples to calculate all model features.' };
+  try {
+    const response = await fetch('/api/quality/assess', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exercise, features }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.available) {
+      return { status: 'unavailable' as const, reason: result.reason || 'Model assessment is unavailable.' };
+    }
+    return {
+      status: 'available' as const,
+      prediction: result.assessment?.prediction as string | number | undefined,
+      task: result.assessment?.task as string | undefined,
+      confidence: result.assessment?.confidence as number | undefined,
+      version: result.model_version as string | undefined,
+    };
+  } catch {
+    return { status: 'unavailable' as const, reason: 'Model service is offline; therapist ROM feedback remains active.' };
+  }
+}
+
 function trunkLean(points: Point[], screen: Point[]) {
   if (![11, 12, 23, 24].every((index) => (screen[index]?.visibility ?? 0) >= 0.45)) return null;
   const shoulderY = (points[11].y + points[12].y) / 2;
@@ -88,6 +161,7 @@ export default function LiveSession() {
   const lastRepEndTimeRef = useRef<number | null>(null);
   const startTriggerThresholdRef = useRef(0);
   const repSamplesRef = useRef<RepSample[]>([]);
+  const repNumberRef = useRef(0);
   const smoothedAngleRef = useRef<number | null>(null);
   const excursionThresholdRef = useRef(12);
   const lastFrameTimeRef = useRef(-1);
@@ -155,6 +229,7 @@ export default function LiveSession() {
         throw new Error('Set minimum knee movement between 8° and 45° per rep.');
       }
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS or localhost in a supported browser.');
+      repNumberRef.current = reps.length;
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       streamRef.current = stream;
       const video = videoRef.current;
@@ -204,6 +279,8 @@ export default function LiveSession() {
             const rightVisible = hasReliableKnee(screen, [24, 26, 28]);
             const left = leftVisible ? angle(points[23], points[25], points[27]) : null;
             const right = rightVisible ? angle(points[24], points[26], points[28]) : null;
+            const leftHip = leftVisible && (screen[11]?.visibility ?? 0) >= KNEE_LANDMARK_VISIBILITY_THRESHOLD ? angle(points[11], points[23], points[25]) : null;
+            const rightHip = rightVisible && (screen[12]?.visibility ?? 0) >= KNEE_LANDMARK_VISIBILITY_THRESHOLD ? angle(points[12], points[24], points[26]) : null;
             const currentTrunkLean = trunkLean(points, screen);
             const candidate = left !== null && right !== null ? (Math.min(screen[23].visibility ?? 0, screen[25].visibility ?? 0, screen[27].visibility ?? 0) >= Math.min(screen[24].visibility ?? 0, screen[26].visibility ?? 0, screen[28].visibility ?? 0) ? left : right) : left ?? right;
             if (candidate !== null) {
@@ -224,6 +301,8 @@ export default function LiveSession() {
                 time: now / 1000,
                 leftKnee: left,
                 rightKnee: right,
+                leftHip,
+                rightHip,
                 primaryKnee: candidate,
                 trunkLean: currentTrunkLean,
               };
@@ -318,7 +397,15 @@ export default function LiveSession() {
                     if (asymmetryOutside && asymmetry !== null) cues.push(`Knee angles differed by ${asymmetry}°, above the therapist-set ${maxAsymmetry}° limit.`);
                     else if (maxAsymmetry !== '' && asymmetry === null) cues.push('Knee asymmetry could not be assessed because both knees were not visible enough.');
                     if (!hasAnyLimit) cues.push('Set at least one therapist-prescribed limit to assess this rep.');
-                    setReps((old) => [...old, { number: old.length + 1, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration, verdict, cue: cues.join(' ') }]);
+                    const number = ++repNumberRef.current;
+                    const modelFeatures = makeSquatModelFeatures(samples);
+                    setReps((old) => [...old, {
+                      number, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration,
+                      verdict, cue: cues.join(' '), model: { status: 'checking' },
+                    }]);
+                    void requestExerciseModel('squat', modelFeatures).then((model) => {
+                      setReps((old) => old.map((rep) => rep.number === number ? { ...rep, model } : rep));
+                    });
                   } else setPhase('Rep not counted · see detector log');
                   phaseRef.current = 'ready'; lowRef.current = null; startAngleRef.current = null;
                   startTimeRef.current = null; repSamplesRef.current = []; setPhase('Return to a comfortable start');
@@ -385,7 +472,7 @@ export default function LiveSession() {
             </div>
             <p className="local-hint">Minimum knee movement (default 20°) is a rep-detection threshold, separate from prescribed ROM. These settings stay in this browser for now; patient plans are not connected yet.</p>
           </div>
-          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
+          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{latest.model.status === 'checking' ? 'Checking general-form model…' : latest.model.status === 'available' ? `Research model advisory: ${latest.model.task === 'regression' ? `predicted score ${latest.model.prediction}` : latest.model.prediction === 'incorrect' ? 'possible form concern' : latest.model.prediction === 'correct' ? 'no general form concern' : `prediction ${latest.model.prediction ?? 'unavailable'}`}${latest.model.confidence === undefined ? '' : ` · ${(latest.model.confidence * 100).toFixed(0)}% confidence`} · therapist ROM rules take precedence; camera validation pending.` : `Model advisory unavailable: ${latest.model.reason ?? 'insufficient visible data'}`}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
             <p>Each event shows knee travel on both sides, travel balance, duration, and spacing. A rep needs at least 10° travel in each knee, with the weaker side reaching at least 35% of the stronger side. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>

@@ -85,8 +85,8 @@ class SquatExercise:
     def __init__(self, model_path: str = 'pose_landmarker_full.task'):
         self.pose_extractor = PoseExtractor(model_path)
         self.model_loader = get_model_loader()
-        configured_model = os.getenv("KINEXA_QUALITY_MODEL", "").strip()
-        if configured_model and not self.model_loader.load(configured_model):
+        configured_model = os.getenv("KINEXA_QUALITY_MODEL", "").strip() or "squat_rf_v1"
+        if not self.model_loader.load(configured_model):
             self.model_loader = get_model_loader()
     
     def analyze_video(self, video_path: str, rules_engine: Optional['RulesEngine'] = None) -> SquatAnalysisResult:

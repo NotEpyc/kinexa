@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 venv/
+.venv/
 env/
 ENV/
 *.egg-info/
@@ -43,6 +44,10 @@ data/raw/
 data/processed/
 data/features/
 models/
+!models/
+models/*
+!models/quality/
+models/quality/*
 *.pt
 *.pth
 *.pkl
@@ -61,6 +66,11 @@ logs/
 htmlcov/
 .pytest_cache/
 .tox/
+.ml-runtime/
+
+# Versioned exercise-quality model artifacts (the pose-landmarker .task remains ignored).
+!models/quality/*.joblib
+!models/quality/*.json
 
 # Jupyter
 .ipynb_checkpoints/

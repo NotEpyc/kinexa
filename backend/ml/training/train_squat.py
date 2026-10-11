@@ -29,9 +29,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import GroupKFold
 from sklearn.pipeline import Pipeline
 from sklearn.utils.class_weight import compute_sample_weight
-from xgboost import XGBClassifier, XGBRegressor
-
-from app.features.squat import SQUAT_MODEL_FEATURES
+from app.features.registry import EXERCISE_FEATURE_SCHEMAS, get_feature_schema
 
 
 def _make_estimator(model_type: str, task: str, random_state: int) -> Pipeline:
@@ -51,6 +49,8 @@ def _make_estimator(model_type: str, task: str, random_state: int) -> Pipeline:
             n_jobs=-1,
         )
     elif model_type == "xgb" and task == "classification":
+        from xgboost import XGBClassifier
+
         estimator = XGBClassifier(
             n_estimators=250,
             max_depth=2,
@@ -63,6 +63,8 @@ def _make_estimator(model_type: str, task: str, random_state: int) -> Pipeline:
             n_jobs=1,
         )
     else:
+        from xgboost import XGBRegressor
+
         estimator = XGBRegressor(
             n_estimators=250,
             max_depth=2,
@@ -132,8 +134,10 @@ def _group_bootstrap_ci(
 
 
 def train(args: argparse.Namespace) -> list[Path]:
+    schema = get_feature_schema(args.exercise)
+    feature_names = schema.feature_names
     frame = pd.read_csv(args.features)
-    required = set(SQUAT_MODEL_FEATURES) | {args.target, args.group}
+    required = set(feature_names) | {args.target, args.group}
     missing = sorted(required - set(frame.columns))
     if missing:
         raise ValueError(f"Feature table is missing required columns: {', '.join(missing)}")
@@ -141,10 +145,12 @@ def train(args: argparse.Namespace) -> list[Path]:
         raise ValueError("Target and subject_id/group columns cannot contain missing values.")
 
     frame[args.group] = frame[args.group].astype(str)
-    if frame[args.group].nunique() < 3:
+    group_count = frame[args.group].nunique()
+    if group_count < 3:
         raise ValueError("At least 3 distinct subject groups are required for grouped cross-validation.")
+    n_splits = min(args.folds, group_count)
 
-    for name in SQUAT_MODEL_FEATURES:
+    for name in feature_names:
         frame[name] = pd.to_numeric(frame[name], errors="coerce")
         if frame[name].notna().sum() == 0:
             raise ValueError(f"Feature '{name}' has no numeric observations.")
@@ -160,8 +166,10 @@ def train(args: argparse.Namespace) -> list[Path]:
             label: frame.loc[frame[args.target].astype(str) == label, args.group].nunique()
             for label in class_labels
         }
-        if min(represented_subjects.values()) < 2:
-            raise ValueError("Each class must occur in at least two distinct subjects for subject-grouped evaluation.")
+        if min(represented_subjects.values()) < n_splits:
+            raise ValueError(
+                f"Each class must occur in at least {n_splits} distinct subjects so every grouped training fold can learn both classes."
+            )
         label_to_id = {label: index for index, label in enumerate(class_labels)}
         y = frame[args.target].astype(str).map(label_to_id).to_numpy(dtype=np.int64)
     else:
@@ -169,21 +177,26 @@ def train(args: argparse.Namespace) -> list[Path]:
         if not np.isfinite(y).all():
             raise ValueError("Regression target must be numeric and non-missing.")
 
-    x = frame.loc[:, SQUAT_MODEL_FEATURES].to_numpy(dtype=np.float64)
+    x = frame.loc[:, feature_names].to_numpy(dtype=np.float64)
     groups = frame[args.group].to_numpy()
-    n_splits = min(args.folds, len(np.unique(groups)))
     splitter = GroupKFold(n_splits=n_splits)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[Path] = []
     metric_fn = _classification_metrics if args.task == "classification" else _regression_metrics
     metric_names = ["accuracy", "precision_macro", "recall_macro", "f1_macro"] if args.task == "classification" else ["mae", "correlation"]
+    baseline_oof = np.full(len(frame), np.nan, dtype=np.float64)
 
     for model_type in args.models:
         template = _make_estimator(model_type, args.task, args.seed)
         oof = np.full(len(frame), np.nan, dtype=np.float64)
         fold_scores = []
         for train_idx, valid_idx in splitter.split(x, y, groups):
+            if args.task == "classification":
+                labels, counts = np.unique(y[train_idx], return_counts=True)
+                baseline_oof[valid_idx] = labels[int(np.argmax(counts))]
+            else:
+                baseline_oof[valid_idx] = float(np.mean(y[train_idx]))
             model = clone(template)
             fit_kwargs = {}
             if args.task == "classification" and model_type == "xgb":
@@ -197,10 +210,12 @@ def train(args: argparse.Namespace) -> list[Path]:
             raise RuntimeError("Grouped cross-validation did not produce an out-of-fold prediction for every row.")
 
         pooled = metric_fn(y, oof)
+        baseline_metrics = metric_fn(y, baseline_oof)
         ci_metric = "f1_macro" if args.task == "classification" else "mae"
         ci = _group_bootstrap_ci(y, oof, groups, metric_fn, ci_metric, args.seed)
         metrics = {
             **pooled,
+            **{f"baseline_{name}": value for name, value in baseline_metrics.items()},
             f"{ci_metric}_ci95_low": ci[0],
             f"{ci_metric}_ci95_high": ci[1],
         }
@@ -210,28 +225,31 @@ def train(args: argparse.Namespace) -> list[Path]:
             fit_kwargs["model__sample_weight"] = compute_sample_weight("balanced", y)
         final_model.fit(x, y, **fit_kwargs)
 
-        version = f"squat_{model_type}_v1"
+        version = f"{args.exercise}_{model_type}_v{schema.version}"
         artifact_path = output_dir / f"{version}.joblib"
         joblib.dump(final_model, artifact_path)
         estimator = final_model.named_steps["model"]
         importances = getattr(estimator, "feature_importances_", None)
         metadata = {
             "version": version,
-            "exercise": "squat",
+            "exercise": args.exercise,
+            "feature_schema_version": schema.version,
             "model_type": model_type,
             "task": args.task,
-            "feature_names": list(SQUAT_MODEL_FEATURES),
+            "feature_names": list(feature_names),
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "metrics": metrics,
+            "baseline_metrics": baseline_metrics,
             "target_column": args.target,
             "group_column": args.group,
+            "source_datasets": sorted(frame["dataset"].dropna().astype(str).unique().tolist()) if "dataset" in frame else [],
             "class_labels": class_labels,
             "n_examples": int(len(frame)),
             "n_subjects": int(frame[args.group].nunique()),
             "cv_folds": n_splits,
             "fold_scores": fold_scores,
             "confusion_matrix": confusion_matrix(y, oof).tolist() if args.task == "classification" else None,
-            "global_feature_importance": dict(zip(SQUAT_MODEL_FEATURES, map(float, importances))) if importances is not None else {},
+            "global_feature_importance": dict(zip(feature_names, map(float, importances))) if importances is not None else {},
         }
         metadata_path = output_dir / f"{version}.json"
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -248,10 +266,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target", default="label", help="Target column (binary label or clinical score)")
     parser.add_argument("--group", default="subject_id", help="Subject grouping column; random rep splits are prohibited")
     parser.add_argument("--task", choices=("classification", "regression"), required=True)
+    parser.add_argument(
+        "--exercise",
+        choices=tuple(sorted(EXERCISE_FEATURE_SCHEMAS)),
+        default="squat",
+        help="Exercise module selecting the canonical input feature schema (default: squat)",
+    )
     parser.add_argument("--models", nargs="+", choices=("rf", "xgb"), default=("rf", "xgb"))
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-dir", type=Path, default=project_root / "models")
+    parser.add_argument("--output-dir", type=Path, default=project_root / "models" / "quality")
     return parser.parse_args()
 
 

@@ -1,0 +1,104 @@
+{
+  "version": "squat_rf_v1",
+  "exercise": "squat",
+  "feature_schema_version": 1,
+  "model_type": "rf",
+  "task": "classification",
+  "feature_names": [
+    "min_left_knee_angle",
+    "min_right_knee_angle",
+    "knee_asymmetry",
+    "min_hip_angle",
+    "max_trunk_lean",
+    "trunk_lean_at_bottom",
+    "duration",
+    "descent_time",
+    "ascent_time",
+    "smoothness"
+  ],
+  "trained_at": "2026-10-11T17:33:52.687555+00:00",
+  "metrics": {
+    "accuracy": 0.7172774869109948,
+    "precision_macro": 0.6736004108885465,
+    "recall_macro": 0.6704918032786886,
+    "f1_macro": 0.6719465648854962,
+    "baseline_accuracy": 0.680628272251309,
+    "baseline_precision_macro": 0.3403141361256545,
+    "baseline_recall_macro": 0.5,
+    "baseline_f1_macro": 0.40498442367601245,
+    "f1_macro_ci95_low": 0.5537579030817994,
+    "f1_macro_ci95_high": 0.7464825257588416
+  },
+  "baseline_metrics": {
+    "accuracy": 0.680628272251309,
+    "precision_macro": 0.3403141361256545,
+    "recall_macro": 0.5,
+    "f1_macro": 0.40498442367601245
+  },
+  "target_column": "label",
+  "group_column": "subject_id",
+  "source_datasets": [
+    "REHAB24-6"
+  ],
+  "class_labels": [
+    "correct",
+    "incorrect"
+  ],
+  "n_examples": 191,
+  "n_subjects": 9,
+  "cv_folds": 5,
+  "fold_scores": [
+    {
+      "accuracy": 0.8148148148148148,
+      "precision_macro": 0.7357142857142858,
+      "recall_macro": 0.7619047619047619,
+      "f1_macro": 0.7467166979362101
+    },
+    {
+      "accuracy": 0.7560975609756098,
+      "precision_macro": 0.3780487804878049,
+      "recall_macro": 0.5,
+      "f1_macro": 0.4305555555555556
+    },
+    {
+      "accuracy": 0.6428571428571429,
+      "precision_macro": 0.6052631578947368,
+      "recall_macro": 0.8026315789473684,
+      "f1_macro": 0.5509622238061297
+    },
+    {
+      "accuracy": 0.7560975609756098,
+      "precision_macro": 0.7804232804232805,
+      "recall_macro": 0.7523809523809524,
+      "f1_macro": 0.7487745098039216
+    },
+    {
+      "accuracy": 0.65,
+      "precision_macro": 0.7941176470588236,
+      "recall_macro": 0.65,
+      "f1_macro": 0.6011396011396011
+    }
+  ],
+  "confusion_matrix": [
+    [
+      104,
+      26
+    ],
+    [
+      28,
+      33
+    ]
+  ],
+  "global_feature_importance": {
+    "min_left_knee_angle": 0.14442925340813614,
+    "min_right_knee_angle": 0.19009506597876175,
+    "knee_asymmetry": 0.0880805116705567,
+    "min_hip_angle": 0.06885109391210564,
+    "max_trunk_lean": 0.16312753431329988,
+    "trunk_lean_at_bottom": 0.14515854583761226,
+    "duration": 0.0523989033626777,
+    "descent_time": 0.03688090575838883,
+    "ascent_time": 0.034371496911691675,
+    "smoothness": 0.07660668884676933
+  }
+}

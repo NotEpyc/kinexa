@@ -35,7 +35,7 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
-The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. The current live page does not require the backend; upload analysis and backend API work do. No `.env` or database setup is currently required. The backend uses default in-code ROM limits for upload analysis; patient-specific values are not persisted yet.
+The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. Live pose tracking and therapist ROM rules work without it; per-rep model inference requires the backend. The browser sends only derived movement features, not camera frames. No `.env` or database setup is currently required. The backend uses default in-code ROM limits for upload analysis; patient-specific values are not persisted yet.
 
 ## Datasets
 
@@ -66,12 +66,26 @@ data/
 |---------|----------|--------|-----------|
 | **KIMORE** (ex5 = squat) | 5 exercises, 78 subjects | CSV (no headers) | `Train_X.csv` (100 cols), `Train_Y.csv` (0-50 clinical score) |
 | **UI-PRMD** (ex4 = deep squat) | 10 exercises, 10 subjects | CSV (no headers) | `Data_Correct/Incorrect.csv`, `Labels_Correct/Incorrect.csv`, `_inc` files |
+| **REHAB24-6** (Ex6 = squat) | 6 rehabilitation exercises, 10 subjects | 3D motion-capture skeletons with per-rep labels | `3d_joints.zip`, `Segmentation.csv`, `joints_names.txt` |
+
+REHAB24-6's official terms restrict use to academic/nonprofit, non-commercial research. Cite the source paper when reporting results. See the [official Zenodo record](https://zenodo.org/records/13305826).
+
+### Train the first quality model (squat)
+
+Download `3d_joints.zip`, `Segmentation.csv`, and `joints_names.txt` from the REHAB24-6 Zenodo record into `data/raw/rehab24-6/`. Install the backend requirements, then run from `backend/`:
+
+```powershell
+python -m ml.datasets.prepare_rehab246_squat
+python -m ml.training.train_exercise ..\data\features\rehab246_squat.csv --exercise squat --task classification --target label --group subject_id --models rf
+```
+
+Add `xgb` to `--models` to compare XGBoost. The extractor omits repetitions marked with erroneous motion-capture data; training uses subject-grouped folds. Model files and evaluation metadata are written to `models/quality/`, while downloaded data and extracted feature CSVs stay out of Git. The source skeletons are motion-capture ground truth, not MediaPipe output, so this evaluation does not establish live-camera accuracy.
 
 ## Backend Configuration
 
 ### Environment Variables
 
-No environment variables are needed to run the current prototype. The optional backend quality-model loader can be selected with `KINEXA_QUALITY_MODEL`, but no trained quality model artifact is currently shipped.
+No environment variables are needed to run the current prototype. If a model artifact is present, the backend loads `squat_rf_v1` by default. Set `KINEXA_QUALITY_MODEL` to a different registered artifact version to select it.
 
 ### Run Backend
 ```bash
@@ -187,9 +201,9 @@ All dependencies pinned to versions with Python 3.13 wheels:
 |-------|--------|-------------|
 | **A** | ✅ | Research, datasets, MediaPipe validation |
 | **B** | ✅ | Rules-first pipeline (rules → ML) |
-| **C** | 🔄 | ML prototype (RF/XGBoost on KIMORE/UI-PRMD) |
-| **D** | 🔄 | Backend API and optional model inference scaffold; no trained quality model shipped |
-| **E** | 🔄 | Live browser squat prototype with therapist-entered ROM; live ML bridge is not implemented |
+| **C** | 🔄 | Squat Random Forest trained with subject-grouped validation; live-camera validation remains |
+| **D** | 🔄 | Exercise-registry upload API and per-rep quality inference; persistence/auth remain |
+| **E** | 🔄 | Live browser squat feedback sends per-rep features to the model; therapist ROM remains authoritative |
 | **F** | ⏳ | PostgreSQL persistence, auth, and analysis history |
 | **G** | ⏳ | Subject-independent and physiotherapist validation |
 

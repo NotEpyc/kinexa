@@ -24,7 +24,7 @@ class ModelLoader:
     
     def __init__(self, models_dir: Optional[str] = None):
         project_root = Path(__file__).resolve().parents[3]
-        self.models_dir = Path(models_dir) if models_dir else project_root / "models"
+        self.models_dir = Path(models_dir) if models_dir else project_root / "models" / "quality"
         self._model = None
         self._metadata: Optional[ModelMetadata] = None
     

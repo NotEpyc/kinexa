@@ -4,13 +4,13 @@ An AI-powered platform where physiotherapists define patient-specific exercise l
 
 ## Current Prototype: Live Squat Feedback
 
-The frontend supports a browser-camera live squat session using MediaPipe Pose Landmarker. It smooths the live knee-angle signal, detects completed reps, and summarizes bottom knee angle, trunk lean, knee asymmetry, and rep duration, with a rolling two-knee angle graph, prescribed ROM band, and counted-rep markers during the session. Rep detection uses a separate minimum knee-movement setting (20° by default), a minimum cycle duration, and minimum rep spacing so custom ROM limits cannot make tiny movements count as reps. Both knee angles must be available at the rep start and during movement, and each knee must travel at least half the configured minimum movement (at least 10°), and the weaker knee must reach at least 35% of the stronger knee travel, so strongly one-sided movement is rejected. The graph labels anatomical sides and notes that the camera preview is mirrored. An expandable detector log shows left/right travel, thresholds, duration, and whether each attempted cycle was counted or rejected; the same events go to the browser console. Therapist-entered thresholds for knee range, trunk lean, and asymmetry are evaluated locally in the browser; a configured-but-unmeasurable metric is marked not assessable. Settings remain in the browser and are not linked to patient plans. The `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`, so the backend is not required for browser-side pose tracking. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend and open `http://localhost:3000`.
+The frontend supports a browser-camera live squat session using MediaPipe Pose Landmarker. It smooths the live knee-angle signal, detects completed reps, and summarizes bottom knee angle, trunk lean, knee asymmetry, and rep duration, with a rolling two-knee angle graph, prescribed ROM band, and counted-rep markers during the session. Rep detection uses a separate minimum knee-movement setting (20° by default), a minimum cycle duration, and minimum rep spacing so custom ROM limits cannot make tiny movements count as reps. Both knee angles must be available at the rep start and during movement, and each knee must travel at least half the configured minimum movement (at least 10°), and the weaker knee must reach at least 35% of the stronger knee travel, so strongly one-sided movement is rejected. Low-confidence knee traces are omitted. The graph labels anatomical sides and notes that the camera preview is mirrored. An expandable detector log shows left/right travel, thresholds, duration, and whether each attempted cycle was counted or rejected; the same events go to the browser console. Therapist-entered thresholds for knee range, trunk lean, and asymmetry are evaluated locally in the browser; a configured-but-unmeasurable metric is marked not assessable. The live page can send per-rep features (never camera frames) to the backend quality-model endpoint for an advisory model result; therapist ROM rules remain authoritative. Settings remain in the browser and are not linked to patient plans. The `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend at `http://localhost:3000`; run the backend too for quality-model inference.
 
-The ROM inputs are currently session-local and are not saved to patient plans. Live camera feedback uses browser-side pose tracking and configured ROM rules; it does not yet call a trained ML model. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
+The ROM inputs are currently session-local and are not saved to patient plans. Camera angle, visibility, and fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
 
 ### Phase C: ML prototype status
 
-The backend now has a shared FR-5 squat feature schema, subject-grouped RF/XGBoost training scaffolding, artifact metadata, optional per-rep inference, and therapist-rule precedence. **No quality model has been trained or shipped yet.** Training requires a per-rep feature table with correct/incorrect labels and subject IDs; the current local KIMORE/UI-PRMD extracts are not sufficient for defensible video-to-MediaPipe training. See [dataset audit and candidate sources](DATASETS.md) and the [training instructions](backend/ml/training/README.md). When a validated model artifact is available, set `KINEXA_QUALITY_MODEL=squat_rf_v1` for backend inference. The current live browser session remains rules-only until a compatible trained model is available and live feature-to-model integration is completed.
+The backend dispatches uploads through a pluggable exercise registry, with exercise-specific analyzers, rules, and feature schemas behind shared upload, inference, and training contracts. Squat is the only implemented exercise today. A squat Random Forest model is trained from REHAB24-6 and can provide per-rep advisory feedback in live sessions; therapist ROM remains authoritative. Its motion-capture skeletons differ from live MediaPipe estimates, so subject-grouped cross-validation does not establish live-camera accuracy. Other exercises can be added by implementing and registering their analyzer/rules/features and adding a matching dataset adapter; the shared trainer and inference contract can then be reused. See [dataset audit and candidate sources](DATASETS.md) and the [training instructions](backend/ml/training/README.md).
 
 ## Architecture
 
@@ -23,9 +23,9 @@ Pipeline: MediaPipe Pose → landmarks → angles → rep detection → features
         ↓
 Rule-based checker (patient_exercise_parameters) → flags
         ↓
-ML model (RF/XGBoost) → quality score + top factors
+Exercise-specific ML model (RF/XGBoost) → advisory quality + global factors
         ↓
-Decision layer (therapist limits override ML) → final verdict
+Decision layer (therapist limits override ML) → final ROM verdict
         ↓
 JSON response → Next.js frontend
         ↓
@@ -86,7 +86,7 @@ python -c "import mediapipe as mp; from mediapipe.tasks import python; from medi
 |-------|-------|
 | A | Research & reuse: obtain KIMORE/UI-PRMD, validate MediaPipe |
 | B | **Rules & upload pipeline**: video → MediaPipe → angles → reps → rule flags |
-| C | ML prototype: subject-independent training scaffold and optional inference are implemented; training/validation awaits a suitable subject-labelled feature table |
+| C | Squat ML prototype trained and integrated; live-camera validation still required |
 | D | Core contribution: explainability, ROM customisation, decision layer |
 | E | Backend API: `/analyze`, model loading, structured JSON |
 | F | Frontend: dashboard, patients, plan editor, upload, results |
@@ -99,7 +99,7 @@ The phase table above describes the original upload/ML roadmap; live camera feed
 
 1. **One common skeleton format** for all sources (datasets + MediaPipe)
 2. **One shared feature extractor** across training and inference
-3. **Exercise modules are pluggable** (squat v1, extensible)
+3. **Exercise modules are pluggable** (squat is registered today; shared API and training contracts are extensible)
 4. **Therapist rules override ML** — decision table in PRD §6.7
 
 ## Documentation

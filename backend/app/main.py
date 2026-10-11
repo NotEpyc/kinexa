@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.routes import analyze, patients, plans, health
+from app.routes import analyze, patients, plans, health, quality
 
 app = FastAPI(
     title="Kinexa API",
@@ -33,6 +33,7 @@ app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(analyze.router, prefix="/api", tags=["analyze"])
 app.include_router(patients.router, prefix="/api", tags=["patients"])
 app.include_router(plans.router, prefix="/api", tags=["plans"])
+app.include_router(quality.router, prefix="/api", tags=["quality-model"])
 
 
 @app.get("/")

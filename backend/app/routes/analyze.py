@@ -9,8 +9,7 @@ import os
 import shutil
 import cv2
 
-from app.exercises.squat import SquatExercise
-from app.rules.engine import RulesEngine, Parameter, Metric, Side, Phase
+from app.exercises.registry import get_exercise, supported_exercises
 from app.models.loader import get_model_loader
 
 router = APIRouter()
@@ -45,74 +44,6 @@ class AnalyzeResponse(BaseModel):
     warnings: list[str] = []
 
 
-def _build_rules_engine(patient_id: str, exercise: str) -> RulesEngine:
-    """
-    Build RulesEngine from patient_exercise_parameters.
-    TODO: Replace with actual DB query.
-    For now, return default population limits.
-    """
-    # Default population limits for squat
-    defaults = [
-        Parameter(
-            id="default_knee_min",
-            plan_id="default",
-            metric="knee_angle",
-            side="either",
-            phase="at_bottom",
-            min_value=90.0,
-            max_value=None,
-            unit="deg",
-            tolerance=5.0,
-            effective_from="2024-01-01T00:00:00",
-            effective_to=None,
-            version=1,
-        ),
-        Parameter(
-            id="default_knee_max",
-            plan_id="default",
-            metric="knee_angle",
-            side="either",
-            phase="at_bottom",
-            min_value=None,
-            max_value=130.0,
-            unit="deg",
-            tolerance=5.0,
-            effective_from="2024-01-01T00:00:00",
-            effective_to=None,
-            version=1,
-        ),
-        Parameter(
-            id="default_trunk_max",
-            plan_id="default",
-            metric="trunk_lean",
-            side="either",
-            phase="at_bottom",
-            min_value=None,
-            max_value=25.0,
-            unit="deg",
-            tolerance=3.0,
-            effective_from="2024-01-01T00:00:00",
-            effective_to=None,
-            version=1,
-        ),
-        Parameter(
-            id="default_asym_max",
-            plan_id="default",
-            metric="asymmetry",
-            side="either",
-            phase="at_bottom",
-            min_value=None,
-            max_value=10.0,
-            unit="deg",
-            tolerance=2.0,
-            effective_from="2024-01-01T00:00:00",
-            effective_to=None,
-            version=1,
-        ),
-    ]
-    return RulesEngine(defaults)
-
-
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_video(
     video: UploadFile = File(...),
@@ -125,7 +56,7 @@ async def analyze_video(
     Pipeline:
     1. Validate video (type, size, duration)
     2. Save to temp file
-    3. Run squat analysis pipeline (MediaPipe → angles → reps → features → rules)
+    3. Dispatch to the registered exercise pipeline (MediaPipe → angles → reps → features → rules)
     4. Apply decision table (rules override ML)
     5. Return structured JSON
     """
@@ -180,10 +111,11 @@ async def analyze_video(
         finally:
             cap.release()
 
-        if exercise != "squat":
+        exercise_module = get_exercise(exercise)
+        if exercise_module is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Exercise '{exercise}' not supported. Only 'squat' in v1.",
+                detail=f"Exercise '{exercise}' is not implemented. Supported exercises: {', '.join(supported_exercises())}.",
             )
 
         # analyze.py -> routes -> app -> backend; model bundle is under backend/models.
@@ -197,11 +129,11 @@ async def analyze_video(
                 detail="MediaPipe model not found at backend/models/pose_landmarker_full.task.",
             )
         
-        squat_exercise = SquatExercise(model_path=model_path)
-        rules_engine = _build_rules_engine(patient_id, exercise)
+        exercise_analyzer = exercise_module.analyzer(model_path=model_path)
+        rules_engine = exercise_module.build_rules(patient_id)
         
         # Run analysis
-        result = squat_exercise.analyze_video(temp_path, rules_engine)
+        result = exercise_analyzer.analyze_video(temp_path, rules_engine)
         
         # Check for no assessable reps
         if not result.reps:
@@ -219,7 +151,7 @@ async def analyze_video(
                     status_code=422,
                     detail={
                         "error": "NO_REPS_FOUND",
-                        "message": "No valid reps detected. Check squat depth and form.",
+                        "message": f"No valid {exercise} reps detected. Check movement depth and form.",
                         "warnings": result.warnings
                     }
                 )
@@ -294,7 +226,7 @@ async def analyze_video(
         return AnalyzeResponse(
             analysis_id=str(uuid.uuid4())[:8],
             exercise=exercise,
-            model_version=active_quality_model or "squat_rules_v0",
+            model_version=active_quality_model or f"{exercise}_rules_v0",
             total_reps=total,
             correct_reps=correct_count,
             incorrect_reps=incorrect_count,
