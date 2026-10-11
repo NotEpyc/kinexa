@@ -45,6 +45,7 @@ type DetectorLog = {
 const MIN_REP_DURATION_SECONDS = 0.7;
 const MIN_REP_GAP_SECONDS = 0.8;
 const MIN_BILATERAL_TRAVEL_RATIO = 0.35;
+const KNEE_LANDMARK_VISIBILITY_THRESHOLD = 0.65;
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -58,6 +59,10 @@ function angle(a: Point, b: Point, c: Point) {
   if (!denominator) return null;
   const cosine = Math.max(-1, Math.min(1, (ba[0] * bc[0] + ba[1] * bc[1]) / denominator));
   return Math.round((Math.acos(cosine) * 180) / Math.PI);
+}
+
+function hasReliableKnee(screen: Point[], indices: [number, number, number]) {
+  return indices.every((index) => (screen[index]?.visibility ?? 0) >= KNEE_LANDMARK_VISIBILITY_THRESHOLD);
 }
 
 function trunkLean(points: Point[], screen: Point[]) {
@@ -193,8 +198,10 @@ export default function LiveSession() {
             }
             ctx.fillStyle = '#f5b544';
             // MediaPipe indices use the subject's anatomical left/right, even though the camera preview is mirrored.
-            const leftVisible = [23, 25, 27].every((i) => (screen[i]?.visibility ?? 0) >= 0.45);
-            const rightVisible = [24, 26, 28].every((i) => (screen[i]?.visibility ?? 0) >= 0.45);
+            // Low-confidence inferred joints can make an occluded support leg appear to bend.
+            // Leave that side blank in the chart and exclude it from rep validation instead.
+            const leftVisible = hasReliableKnee(screen, [23, 25, 27]);
+            const rightVisible = hasReliableKnee(screen, [24, 26, 28]);
             const left = leftVisible ? angle(points[23], points[25], points[27]) : null;
             const right = rightVisible ? angle(points[24], points[26], points[28]) : null;
             const currentTrunkLean = trunkLean(points, screen);
@@ -319,7 +326,7 @@ export default function LiveSession() {
                 else if (smoothed > (lowRef.current ?? smoothed) + 5) setPhase('Rise with control');
               }
             }
-            else { setTracking('Pose detected · move knees and ankles into view'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }
+            else { setTracking('Pose detected · improve knee and ankle visibility'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }
           } else { setTracking('No pose — step back into view'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }
         }
         rafRef.current = requestAnimationFrame(loop);
@@ -354,7 +361,7 @@ export default function LiveSession() {
           </div>
           <section className="angle-chart-panel" aria-label="Knee angle over time">
             <div className="angle-chart-header"><span className="micro-label">KNEE ANGLE · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Your left knee</span><span><i className="legend-right"/>Your right knee</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
-            <p className="angle-chart-note">Left and right refer to your body; the camera preview is mirrored.</p>
+            <p className="angle-chart-note">Left and right refer to your body; the camera preview is mirrored. A knee trace is omitted when its hip, knee, or ankle is not clearly visible.</p>
             {angleHistory.length > 1 ? <div className="angle-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={angleHistory} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="#e8ece7" strokeDasharray="3 4" vertical={false}/>
               <XAxis dataKey="seconds" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => `${value.toFixed(0)}s`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={{ stroke: '#e3e8e2' }} minTickGap={24}/>
