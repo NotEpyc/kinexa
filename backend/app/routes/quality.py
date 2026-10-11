@@ -26,12 +26,34 @@ async def available_exercises() -> dict[str, list[dict[str, Any]]]:
     for schema in EXERCISE_FEATURE_SCHEMAS.values():
         model_version = os.getenv("KINEXA_QUALITY_MODEL", "").strip() or schema.default_model_version
         available = loader.load(model_version)
+        model_matches = bool(available and loader.metadata and loader.metadata.exercise == schema.exercise)
+        validation = loader.metadata.camera_validation if model_matches and loader.metadata else None
+        camera_validated = bool(
+            validation
+            and validation.get("status") == "passed"
+            and validation.get("validation_domain") == "mediapipe_live"
+            and validation.get("subject_independent") is True
+            and isinstance(validation.get("therapist_agreement_percent"), (int, float))
+            and validation["therapist_agreement_percent"] >= 80
+        )
+        readiness = "camera_validated" if camera_validated else "model_advisory" if model_matches else "rules_only"
+        readiness_reason = (
+            "Camera validation metadata passed subject-independent checks and reports at least 80% therapist agreement."
+            if camera_validated
+            else "The available model has not passed documented subject-independent validation on MediaPipe camera data."
+            if model_matches
+            else "No compatible quality model is installed; exercise checks use rules only."
+        )
         exercises.append({
             "exercise": schema.exercise,
             "feature_schema_version": schema.version,
             "feature_names": list(schema.feature_names),
             "default_model_version": schema.default_model_version,
-            "model_available": bool(available and loader.metadata and loader.metadata.exercise == schema.exercise),
+            "model_available": model_matches,
+            "readiness": readiness,
+            "readiness_reason": readiness_reason,
+            "source_datasets": loader.metadata.source_datasets if model_matches and loader.metadata else [],
+            "camera_validation": validation,
         })
     return {"exercises": exercises}
 

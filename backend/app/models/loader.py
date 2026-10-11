@@ -17,6 +17,8 @@ class ModelMetadata:
     metrics: Dict[str, float]
     task: str = "classification"
     class_labels: Optional[List[str]] = None
+    source_datasets: Optional[List[str]] = None
+    camera_validation: Optional[Dict[str, Any]] = None
 
 
 class ModelLoader:

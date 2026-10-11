@@ -14,6 +14,14 @@ python -m ml.training.train_exercise ..\data\features\rehab246_squat.csv --exerc
 
 The official REHAB24-6 dataset is restricted to academic/nonprofit, non-commercial research and must be cited. Its motion-capture skeletons are not MediaPipe estimates: the resulting grouped metrics measure performance on source skeletons and do not establish accuracy on live camera input. Validate the runtime pose-to-feature path on subject-labelled MediaPipe recordings before presenting live model outputs as reliable.
 
+### Live-camera readiness gate
+
+The currently checked-in `squat_rf_v1` is an advisory model because it was trained on REHAB24-6 motion-capture features. Training a new artifact with the shared trainer does not by itself make it camera-validated. Camera training rows must be derived from MediaPipe with the same feature names, units, angle convention, and extractor used by live inference; they must include therapist-reviewed `correct`/`incorrect` labels, a pseudonymous `subject_id`, and a `dataset` value identifying the capture source. Keep all reps from one person in the same validation fold.
+
+`GET /api/quality/exercises` reports `rules_only`, `model_advisory`, or `camera_validated`. The API only reports the last status when model metadata contains a `camera_validation` object with `status: "passed"`, `validation_domain: "mediapipe_live"`, `subject_independent: true`, and `therapist_agreement_percent` of at least 80. That evidence must come from held-out camera sessions and physiotherapist review; do not add the metadata before the evaluation is actually completed. The UI displays the server-reported readiness and reason.
+
+There are currently no labeled MediaPipe camera feature rows in `data/features/`, so retraining a camera-domain model is blocked on collecting and reviewing those samples. The mocap artifact remains useful as a research comparison, not as camera-validated evidence.
+
 The local KIMORE extract still cannot be used for subject-independent validation because it has no subject/sequence map. The local UI-PRMD flat files do not retain subject IDs or a confirmed per-rep-to-frame mapping. Do not merge these datasets or copy an execution-level KIMORE score onto each rep without explicitly recording that approximation.
 
 ## Adding another exercise
