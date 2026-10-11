@@ -34,6 +34,9 @@ type DetectorLog = {
   excursion: number;
   leftExcursion: number | null;
   rightExcursion: number | null;
+  leftVisibleFrames: number | null;
+  rightVisibleFrames: number | null;
+  repFrames: number | null;
   minBilateralMovement: number;
   bilateralRatio: number | null;
   triggerThreshold: number;
@@ -49,6 +52,9 @@ const MIN_REP_DURATION_SECONDS = 0.7;
 const MIN_REP_GAP_SECONDS = 0.8;
 const MIN_BILATERAL_TRAVEL_RATIO = 0.35;
 const KNEE_LANDMARK_VISIBILITY_THRESHOLD = 0.65;
+const BASELINE_ADAPTATION_DEGREES_PER_SECOND = 2;
+const MAX_STANDING_RETURN_OFFSET_DEGREES = 18;
+const RETURN_FROM_BOTTOM_FRACTION = 0.65;
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -155,6 +161,7 @@ export default function LiveSession() {
   const rafRef = useRef<number | null>(null);
   const phaseRef = useRef<'ready' | 'descending' | 'ascending'>('ready');
   const baselineRef = useRef<number | null>(null);
+  const lastBaselineUpdateRef = useRef<number | null>(null);
   const lowRef = useRef<number | null>(null);
   const startAngleRef = useRef<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
@@ -243,7 +250,7 @@ export default function LiveSession() {
           runningMode: 'VIDEO', numPoses: 1, minPoseDetectionConfidence: 0.55, minTrackingConfidence: 0.55,
         });
       }
-      phaseRef.current = 'ready'; baselineRef.current = null; lowRef.current = null; startAngleRef.current = null;
+      phaseRef.current = 'ready'; baselineRef.current = null; lastBaselineUpdateRef.current = null; lowRef.current = null; startAngleRef.current = null;
       startTimeRef.current = null; lastRepEndTimeRef.current = null; repSamplesRef.current = []; smoothedAngleRef.current = null; lastFrameTimeRef.current = -1;
       sessionStartTimeRef.current = performance.now(); lastUiUpdateRef.current = 0; setAngleHistory([]); setRepMarkers([]);
       setRunning(true); setPhase('Hold a comfortable starting position');
@@ -310,7 +317,18 @@ export default function LiveSession() {
               if (phaseRef.current === 'ready') {
                 const baseline = baselineRef.current;
                 if (baseline === null) baselineRef.current = smoothed;
-                else if (smoothed >= baseline - 3) baselineRef.current = baseline * 0.92 + smoothed * 0.08;
+                else {
+                  // Let the standing reference follow slow stance/camera drift while the
+                  // detector is idle. A frozen early peak can otherwise strand the rep
+                  // state below its return threshold for the rest of the session.
+                  const elapsed = lastBaselineUpdateRef.current === null
+                    ? 1 / 30
+                    : Math.min(0.2, Math.max(0, now / 1000 - lastBaselineUpdateRef.current));
+                  const maxShift = BASELINE_ADAPTATION_DEGREES_PER_SECOND * elapsed;
+                  const shift = Math.max(-maxShift, Math.min(maxShift, smoothed - baseline));
+                  baselineRef.current = baseline + shift;
+                }
+                lastBaselineUpdateRef.current = now / 1000;
                 const calibratedTop = baselineRef.current ?? candidate;
                 const startThreshold = Math.max(6, Math.min(14, Math.round(Number(minRepMovement) * 0.5)));
                 if (smoothed <= calibratedTop - startThreshold) {
@@ -322,6 +340,7 @@ export default function LiveSession() {
                     time: new Date().toLocaleTimeString(), event: 'started', angle: Math.round(smoothed),
                     baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
                     leftExcursion: null, rightExcursion: null,
+                    leftVisibleFrames: null, rightVisibleFrames: null, repFrames: null,
                     minBilateralMovement: Math.max(10, Math.round(Number(minRepMovement) * 0.5)),
                     bilateralRatio: null,
                     minMovement: Number(minRepMovement), duration: 0, minDuration: MIN_REP_DURATION_SECONDS,
@@ -331,18 +350,36 @@ export default function LiveSession() {
                 }
               } else if (phaseRef.current === 'descending') {
                 lowRef.current = Math.min(lowRef.current ?? smoothed, smoothed);
-                const returnThreshold = Math.max(4, Math.min(7, Math.round((startAngleRef.current ?? candidate) * 0.03)));
-                if (smoothed >= (startAngleRef.current ?? smoothed) - returnThreshold) {
+                const repBottom = lowRef.current ?? smoothed;
+                const repTop = startAngleRef.current ?? smoothed;
+                const repExcursion = repTop - repBottom;
+                const returnOffset = Math.min(MAX_STANDING_RETURN_OFFSET_DEGREES, Math.max(10, Math.round(excursionThresholdRef.current * 0.9)));
+                // Require recovery near standing, but tolerate a modest shift from the
+                // calibrated top. The bottom-relative guard prevents a tiny rebound from
+                // ending a rep before the person has substantially risen.
+                const returnLevel = Math.max(
+                  repTop - returnOffset,
+                  repBottom + Math.max(8, repExcursion * RETURN_FROM_BOTTOM_FRACTION),
+                );
+                if (smoothed >= returnLevel) {
                   const bottom = lowRef.current ?? smoothed;
                   const baseline = startAngleRef.current ?? smoothed;
                   const excursion = baseline - bottom;
                   const repSamples = repSamplesRef.current;
-                  const leftStart = repSamples[0]?.leftKnee ?? null;
-                  const rightStart = repSamples[0]?.rightKnee ?? null;
-                  const leftBottom = repSamples.reduce<number | null>((lowest, current) => current.leftKnee === null ? lowest : Math.min(lowest ?? current.leftKnee, current.leftKnee), null);
-                  const rightBottom = repSamples.reduce<number | null>((lowest, current) => current.rightKnee === null ? lowest : Math.min(lowest ?? current.rightKnee, current.rightKnee), null);
-                  const leftExcursion = leftStart !== null && leftBottom !== null ? Number((leftStart - leftBottom).toFixed(1)) : null;
-                  const rightExcursion = rightStart !== null && rightBottom !== null ? Number((rightStart - rightBottom).toFixed(1)) : null;
+                  const earlyWindow = repSamples.slice(0, Math.max(3, Math.ceil(repSamples.length * 0.35)));
+                  const leftEarly = earlyWindow.flatMap((current) => current.leftKnee === null ? [] : [current.leftKnee]);
+                  const rightEarly = earlyWindow.flatMap((current) => current.rightKnee === null ? [] : [current.rightKnee]);
+                  const leftValues = repSamples.flatMap((current) => current.leftKnee === null ? [] : [current.leftKnee]);
+                  const rightValues = repSamples.flatMap((current) => current.rightKnee === null ? [] : [current.rightKnee]);
+                  const leftVisibleFrames = leftValues.length;
+                  const rightVisibleFrames = rightValues.length;
+                  const minStartFrames = Math.min(3, Math.max(1, Math.ceil(earlyWindow.length * 0.25)));
+                  const leftExcursion = leftEarly.length >= minStartFrames && leftValues.length >= 3
+                    ? Number((Math.max(...leftEarly) - Math.min(...leftValues)).toFixed(1))
+                    : null;
+                  const rightExcursion = rightEarly.length >= minStartFrames && rightValues.length >= 3
+                    ? Number((Math.max(...rightEarly) - Math.min(...rightValues)).toFixed(1))
+                    : null;
                   const bilateralRatio = leftExcursion !== null && rightExcursion !== null
                     ? Number((Math.min(leftExcursion, rightExcursion) / Math.max(leftExcursion, rightExcursion, 1)).toFixed(2))
                     : null;
@@ -351,7 +388,7 @@ export default function LiveSession() {
                   const gap = lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current;
                   const rejectionReasons: string[] = [];
                   if (excursion < excursionThresholdRef.current) rejectionReasons.push(`movement ${excursion.toFixed(1)}° was below ${excursionThresholdRef.current}° minimum`);
-                  if (leftExcursion === null || rightExcursion === null) rejectionReasons.push('both knee angles were unavailable at the rep start or during movement, so bilateral movement could not be confirmed');
+                  if (leftExcursion === null || rightExcursion === null) rejectionReasons.push(`bilateral knee travel could not be confirmed (left visible ${leftVisibleFrames}/${repSamples.length} rep frames, right ${rightVisibleFrames}/${repSamples.length}); keep both knees and ankles in view`);
                   else if (leftExcursion < minBilateralMovement || rightExcursion < minBilateralMovement) rejectionReasons.push(`both knees must move at least ${minBilateralMovement}° (left ${leftExcursion}°, right ${rightExcursion}°)`);
                   else if (bilateralRatio !== null && bilateralRatio < MIN_BILATERAL_TRAVEL_RATIO) rejectionReasons.push(`knee travel was too one-sided (left ${leftExcursion}°, right ${rightExcursion}°; weaker side ${Math.round(bilateralRatio * 100)}% of stronger side, minimum ${Math.round(MIN_BILATERAL_TRAVEL_RATIO * 100)}%)`);
                   if (duration < MIN_REP_DURATION_SECONDS) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${MIN_REP_DURATION_SECONDS}s minimum`);
@@ -360,7 +397,8 @@ export default function LiveSession() {
                   logDetector({
                     time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
                     baseline: Math.round(baseline), bottom: Math.round(bottom), excursion: Number(excursion.toFixed(1)),
-                    leftExcursion, rightExcursion, minBilateralMovement, bilateralRatio,
+                    leftExcursion, rightExcursion, leftVisibleFrames, rightVisibleFrames, repFrames: repSamples.length,
+                    minBilateralMovement, bilateralRatio,
                     triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
                     duration: Number(duration.toFixed(2)), minDuration: MIN_REP_DURATION_SECONDS,
                     gap: gap === null ? null : Number(gap.toFixed(2)), minGap: MIN_REP_GAP_SECONDS,
@@ -476,7 +514,7 @@ export default function LiveSession() {
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
             <p>Each event shows knee travel on both sides, travel balance, duration, and spacing. A rep needs at least 10° travel in each knee, with the weaker side reaching at least 35% of the stronger side. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
-            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / 35% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · visible L/R {entry.leftVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} · {entry.rightVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} frames · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / 35% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
           </details>
         </aside>
       </section>
