@@ -4,9 +4,9 @@ An AI-powered platform where physiotherapists define patient-specific exercise l
 
 ## Current Prototype: Live Squat Feedback
 
-The frontend now supports a browser-camera live squat session using MediaPipe Pose Landmarker. It estimates knee angle on each camera frame, detects completed squat repetitions, and compares bottom-of-rep knee angle with a therapist-entered range. The existing `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`, so the backend is not required for browser-side pose tracking. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend and open `http://localhost:3000`.
+The frontend supports a browser-camera live squat session using MediaPipe Pose Landmarker. It smooths the live knee-angle signal, detects completed reps, and summarizes bottom knee angle, trunk lean, knee asymmetry, and rep duration. Therapist-entered thresholds for knee range, trunk lean, and asymmetry are evaluated locally in the browser; a configured-but-unmeasurable metric is marked not assessable. Settings remain in the browser and are not linked to patient plans. The `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`, so the backend is not required for browser-side pose tracking. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend and open `http://localhost:3000`.
 
-The ROM inputs are currently session-local and are not saved to patient plans. Live camera feedback currently uses browser-side pose tracking and therapist-set ROM rules; it does not yet call a trained ML model. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
+The ROM inputs are currently session-local and are not saved to patient plans. Live camera feedback uses browser-side pose tracking and configured ROM rules; it does not yet call a trained ML model. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
 
 ### Phase C: ML prototype status
 

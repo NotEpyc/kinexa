@@ -1,15 +1,13 @@
 # Product Requirements Document: Explainable Exercise Form Assessment Platform
 
-**Version:** 1.1 (draft) | **Status:** Ready for review | **Scope of v1:** Squat only
+**Version:** 1.2 (draft) | **Status:** Live-first scope update | **Scope of v1:** Squat only
 
 ---
 
 ## 1. Overview
 
 ### 1.1 Summary
-An AI-powered platform where a physiotherapist defines patient-specific exercise limits and a patient uploads a video of prescribed exercises. The system tracks body movement via pose estimation, scores rep-by-rep deviation from the patient's own target form (not a generic "ideal" template), and returns a per-rep assessment with explanations.
-
-**v1 scope:** upload-only (max 60 s, max 100 MB MP4/MOV/WebM). **v2+ path:** real-time camera feedback via MediaPipe on navigator.mediaDevices.getUserMedia.
+An exercise assessment platform where a physiotherapist defines patient-specific limits and the patient receives squat guidance while exercising in front of a camera. The primary v1 interaction is live, browser-local pose tracking and rep feedback, evaluated against the limits entered for that patient. The backend video-upload pipeline remains available for analysis, but does not replace the live experience.
 
 ### 1.2 Problem statement
 - Home-based rehabilitation depends on patients performing exercises correctly, but therapists cannot watch every session.
@@ -28,15 +26,15 @@ A personalised, explainable exercise assessment tool that integrates existing po
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals (v1)
-1. Accept a squat video and return a per-rep verdict (correct / needs attention) plus an overall score.
+1. Give immediate squat feedback from a live browser camera and return a per-rep summary against therapist-entered limits.
 2. Explain each flagged rep using human-checkable measurements (knee angle, trunk lean, symmetry, tempo, smoothness).
 3. Let a therapist set per-patient ROM limits that override the general model's verdict.
 4. Evaluate the ML model with subject-independent validation and report honest metrics.
-5. Deliver a working end-to-end system: Next.js frontend, FastAPI backend, stored analysis history.
+5. Deliver a working live-first system: Next.js camera feedback, FastAPI upload analysis, and (later) stored analysis history.
 
 ### 2.2 Non-goals (v1)
 - Exercises other than the bodyweight squat.
-- Real-time/live camera feedback (upload-only in v1) **; real-time feedback is a v2+ goal**.
+- Cloud video streaming or remote live-session recording; live pose processing runs in the browser in v1.
 - Deep-learning models such as ST-GCN (a v2 option only if the baseline misses real errors).
 - Regulatory clearance, payments, multi-clinic tenancy, native mobile apps.
 - 3D reconstruction or multi-camera setups.
@@ -77,7 +75,7 @@ A personalised, explainable exercise assessment tool that integrates existing po
 |---|---|
 | Squat, single person in frame | Multiple exercises |
 | Side-view (primary) and front-view (secondary) video | Moving cameras, multi-person scenes |
-| Video upload (MP4/MOV), up to ~60 s | Live streaming |
+| Live browser camera for squat feedback; backend video upload (MP4/MOV/WebM), up to ~60 s | Cloud video streaming or remote recording |
 | Therapist-set ROM per patient | Automated ROM recommendations |
 | Random Forest and XGBoost comparison | Deep learning |
 | Basic auth, patients, plans, history | Billing, clinic hierarchies |
@@ -165,12 +163,20 @@ Final feature list is confirmed after dataset exploration (Phase A/B).
 - FR-11.1 Roles: therapist, patient, admin.
 - FR-11.2 A therapist sees only their own patients; a patient sees only their own data.
 
+### 6.12 Live camera feedback (FR-12)
+- FR-12.1 Capture camera frames in the browser and run MediaPipe Pose on each available video frame. The live-session prototype processes camera frames locally and does not upload them to the server.
+- FR-12.2 Display pose tracking status, live knee angle, and movement phase; smooth the knee-angle signal before rep detection.
+- FR-12.3 Detect completed squat reps and report bottom knee angle, trunk lean, knee asymmetry when both knees are visible, and rep duration.
+- FR-12.4 Apply only therapist-entered limits. Knee min/max, maximum trunk lean, and maximum knee asymmetry may be configured independently. A missing limit is not a violation. If a configured metric cannot be measured because required landmarks are not visible, report it as not assessable rather than passing it.
+- FR-12.5 Show a plain-language cue after each completed rep and keep the safety disclaimer visible. Do not describe a rep as clinically correct based only on camera estimates.
+- FR-12.6 Prototype limitation: live ROM limits are currently held in browser state and are not persisted or linked to a patient/plan. Database-backed therapist plans remain required for clinical workflows.
+
 ---
 
 ## 7. Machine Learning Requirements
 
 ### 7.1 Data sources
-- **KIMORE** ✅ Free dataset (check terms before commercial use). Contains 5 exercises: arm lifting, lateral trunk tilt, trunk rotation, pelvis rotation, and squatting. Squat is included; there is no hip abduction or knee extension. Exercises are scored on a continuous quality scale by physical therapists. One score per exercise execution (rep count to be confirmed from files), not per rep. **Use:** primary training set for regression-style quality score — but label granularity is execution-level; rep-level labels must be approximated. **KIMORE includes RGB video** — running MediaPipe on those videos trains on MediaPipe features, reducing the Kinect-versus-MediaPipe mismatch. Note: KIMORE appears to use a front-facing Kinect (to be confirmed); 2D knee flexion from front view is unreliable.
+- **KIMORE** ✅ Free dataset (check terms before commercial use). Contains 5 exercises: arm lifting, lateral trunk tilt, trunk rotation, pelvis rotation, and squatting. Squat is included; there is no hip abduction or knee extension. Exercises are scored on a continuous quality scale by physical therapists. One score per exercise execution (rep count to be confirmed from files), not per rep. **Use:** potential source for session-level regression, but the local files currently audited contain CSV skeleton/features and clinical scores, not RGB videos; the dataset paper says researchers can contact its authors about RGB. Do not treat the local files as MediaPipe video data or infer subject-independent grouping without IDs.
 - **UI-PRMD** ✅ Free to all users under Open Data Commons PDDL v1.0 (public-domain dedication; confirm if distributing). Exercises: deep squat, hurdle step, inline lunge, side lunge, sit to stand, standing active straight leg raise, and four standing shoulder movements. Labels are provided both as whole-episode files and as segmented per-rep files with `_inc` extension for incorrect movements. Per-rep correct/incorrect files exist. Use as a secondary baseline check only. Labels are "acted errors" — may not look like real patient mistakes.
 - **Domain gap:** Self-collected data required to measure the Kinect/motion-capture vs. MediaPipe skeleton mismatch. Target 100-200+ labelled reps from several people, recorded on phone/webcam, with correct and deliberately incorrect variants (shallow, knee valgus, excessive forward lean, fast/jerky). Labelled by a physiotherapist where possible; otherwise clearly marked as self-labelled.
 - **Reduced dataset:** A cleaned, Vicon-only version of UI-PRMD with movement quality scores and CSV files is also available from the UI-PRMD page.
@@ -392,7 +398,7 @@ Store a **snapshot of constraints** on each analysis so old results stay interpr
 | Small self-collected dataset | Unstable results | Use cross-validation, report confidence intervals, avoid overclaiming |
 | Users treat it as medical advice | Safety/liability | Clear disclaimers, therapist in the loop, no diagnostic language |
 | Privacy of health video | Legal/ethical exposure | Consent flow, minimal retention, encryption, access control |
-| Scope creep (many exercises, real-time) | Missed deadline | Strict v1 scope; expand only after squat is validated |
+| Scope creep (many exercises beyond squat) | Missed deadline | Keep v1 squat-only; expand only after squat is validated |
 
 ---
 

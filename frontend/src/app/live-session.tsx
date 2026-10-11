@@ -4,7 +4,22 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 
 type Point = { x: number; y: number; z: number; visibility?: number };
-type Rep = { number: number; angle: number; verdict: 'within range' | 'outside range'; cue: string };
+type Rep = {
+  number: number;
+  angle: number;
+  asymmetry: number | null;
+  maxTrunkLean: number | null;
+  duration: number;
+  verdict: 'within range' | 'outside range' | 'range not set' | 'not assessable';
+  cue: string;
+};
+type RepSample = {
+  time: number;
+  leftKnee: number | null;
+  rightKnee: number | null;
+  primaryKnee: number;
+  trunkLean: number | null;
+};
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -20,6 +35,15 @@ function angle(a: Point, b: Point, c: Point) {
   return Math.round((Math.acos(cosine) * 180) / Math.PI);
 }
 
+function trunkLean(points: Point[], screen: Point[]) {
+  if (![11, 12, 23, 24].every((index) => (screen[index]?.visibility ?? 0) >= 0.45)) return null;
+  const shoulderY = (points[11].y + points[12].y) / 2;
+  const hipY = (points[23].y + points[24].y) / 2;
+  const shoulderZ = (points[11].z + points[12].z) / 2;
+  const hipZ = (points[23].z + points[24].z) / 2;
+  return Math.round((Math.atan2(Math.abs(shoulderZ - hipZ), Math.abs(shoulderY - hipY)) * 180) / Math.PI);
+}
+
 export default function LiveSession() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -30,6 +54,9 @@ export default function LiveSession() {
   const baselineRef = useRef<number | null>(null);
   const lowRef = useRef<number | null>(null);
   const startAngleRef = useRef<number | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+  const repSamplesRef = useRef<RepSample[]>([]);
+  const smoothedAngleRef = useRef<number | null>(null);
   const excursionThresholdRef = useRef(12);
   const lastFrameTimeRef = useRef(-1);
   const lastUiUpdateRef = useRef(0);
@@ -37,10 +64,14 @@ export default function LiveSession() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [angleNow, setAngleNow] = useState<number | null>(null);
+  const [trunkNow, setTrunkNow] = useState<number | null>(null);
+  const [asymmetryNow, setAsymmetryNow] = useState<number | null>(null);
   const [phase, setPhase] = useState('Camera off');
   const [tracking, setTracking] = useState('Waiting for camera');
   const [minAngle, setMinAngle] = useState('');
   const [maxAngle, setMaxAngle] = useState('');
+  const [maxTrunkAngle, setMaxTrunkAngle] = useState('');
+  const [maxAsymmetry, setMaxAsymmetry] = useState('');
   const [reps, setReps] = useState<Rep[]>([]);
 
   const stop = useCallback(() => {
@@ -73,6 +104,11 @@ export default function LiveSession() {
       if ((min !== null && (!Number.isFinite(min) || min < 30 || min > 180)) || (max !== null && (!Number.isFinite(max) || max < 30 || max > 180)) || (min !== null && max !== null && min > max)) {
         throw new Error('Enter a valid knee angle range between 30° and 180°, with minimum no greater than maximum.');
       }
+      for (const [label, raw, upper] of [['maximum trunk lean', maxTrunkAngle, 90], ['maximum knee asymmetry', maxAsymmetry, 90]] as const) {
+        if (raw !== '' && (!Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > upper)) {
+          throw new Error(`Enter a valid ${label} between 0° and ${upper}°.`);
+        }
+      }
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS or localhost in a supported browser.');
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       streamRef.current = stream;
@@ -88,6 +124,7 @@ export default function LiveSession() {
         });
       }
       phaseRef.current = 'ready'; baselineRef.current = null; lowRef.current = null; startAngleRef.current = null;
+      startTimeRef.current = null; repSamplesRef.current = []; smoothedAngleRef.current = null; lastFrameTimeRef.current = -1;
       setRunning(true); setPhase('Hold a comfortable starting position');
       const loop = () => {
         const v = videoRef.current; const canvas = canvasRef.current; const detector = landmarkerRef.current;
@@ -113,36 +150,83 @@ export default function LiveSession() {
             const rightVisible = [24, 26, 28].every((i) => (screen[i]?.visibility ?? 0) >= 0.45);
             const left = leftVisible ? angle(points[23], points[25], points[27]) : null;
             const right = rightVisible ? angle(points[24], points[26], points[28]) : null;
+            const currentTrunkLean = trunkLean(points, screen);
             const candidate = left !== null && right !== null ? (Math.min(screen[23].visibility ?? 0, screen[25].visibility ?? 0, screen[27].visibility ?? 0) >= Math.min(screen[24].visibility ?? 0, screen[26].visibility ?? 0, screen[28].visibility ?? 0) ? left : right) : left ?? right;
             if (candidate !== null) {
-              if (performance.now() - lastUiUpdateRef.current > 150) { setAngleNow(candidate); lastUiUpdateRef.current = performance.now(); }
+              const now = performance.now();
+              const smoothed = smoothedAngleRef.current === null ? candidate : smoothedAngleRef.current * 0.72 + candidate * 0.28;
+              smoothedAngleRef.current = smoothed;
+              if (now - lastUiUpdateRef.current > 150) {
+                setAngleNow(Math.round(smoothed));
+                setTrunkNow(currentTrunkLean);
+                setAsymmetryNow(left !== null && right !== null ? Math.abs(left - right) : null);
+                lastUiUpdateRef.current = now;
+              }
+              const sample: RepSample = {
+                time: now / 1000,
+                leftKnee: left,
+                rightKnee: right,
+                primaryKnee: candidate,
+                trunkLean: currentTrunkLean,
+              };
+              if (phaseRef.current === 'descending') repSamplesRef.current.push(sample);
               if (phaseRef.current === 'ready') {
                 const baseline = baselineRef.current;
-                if (baseline === null) baselineRef.current = candidate;
-                else if (candidate >= baseline - 3) baselineRef.current = baseline * 0.92 + candidate * 0.08;
+                if (baseline === null) baselineRef.current = smoothed;
+                else if (smoothed >= baseline - 3) baselineRef.current = baseline * 0.92 + smoothed * 0.08;
                 const calibratedTop = baselineRef.current ?? candidate;
                 const configured = minAngle !== '' && maxAngle !== '';
                 const expectedDepthChange = configured ? calibratedTop - Number(maxAngle) : 12;
                 const startThreshold = configured
                   ? Math.max(3, Math.min(12, Math.round(expectedDepthChange * 0.5)))
                   : 12;
-                if (candidate <= calibratedTop - startThreshold) {
-                  phaseRef.current = 'descending'; lowRef.current = candidate; startAngleRef.current = calibratedTop; excursionThresholdRef.current = startThreshold; setPhase('Lower with control');
+                if (smoothed <= calibratedTop - startThreshold) {
+                  phaseRef.current = 'descending'; lowRef.current = smoothed; startAngleRef.current = calibratedTop;
+                  startTimeRef.current = now / 1000; repSamplesRef.current = [sample];
+                  excursionThresholdRef.current = startThreshold; setPhase('Lower with control');
                 }
               } else if (phaseRef.current === 'descending') {
-                lowRef.current = Math.min(lowRef.current ?? candidate, candidate);
+                lowRef.current = Math.min(lowRef.current ?? smoothed, smoothed);
                 const returnThreshold = Math.max(4, Math.min(7, Math.round((startAngleRef.current ?? candidate) * 0.03)));
-                if (candidate >= (startAngleRef.current ?? candidate) - returnThreshold) {
-                  const bottom = lowRef.current ?? candidate;
-                  if ((startAngleRef.current ?? candidate) - bottom >= excursionThresholdRef.current) {
-                    const lo = Number(minAngle); const hi = Number(maxAngle); const configured = minAngle !== '' && maxAngle !== ''; const inRange = configured && bottom >= lo && bottom <= hi; const verdict = inRange ? 'within range' : 'outside range'; const cue = !configured ? 'Set your therapist-prescribed knee range to assess reps.' : bottom < lo ? 'You moved beyond the prescribed depth. Reduce squat depth.' : bottom > hi ? 'Reach the prescribed depth, if comfortable.' : 'Depth is within your prescribed range.'; setReps((old) => [...old, { number: old.length + 1, angle: bottom, verdict, cue }]);
+                if (smoothed >= (startAngleRef.current ?? smoothed) - returnThreshold) {
+                  const bottom = lowRef.current ?? smoothed;
+                  if ((startAngleRef.current ?? smoothed) - bottom >= excursionThresholdRef.current) {
+                    const samples = repSamplesRef.current;
+                    const deepest = samples.reduce((lowest, current) => current.primaryKnee < lowest.primaryKnee ? current : lowest, sample);
+                    const asymmetry = deepest.leftKnee !== null && deepest.rightKnee !== null ? Math.abs(deepest.leftKnee - deepest.rightKnee) : null;
+                    const peakTrunkLean = samples.reduce((peak, current) => current.trunkLean === null ? peak : Math.max(peak ?? 0, current.trunkLean), null as number | null);
+                    const kneeConfigured = minAngle !== '' && maxAngle !== '';
+                    const kneeOutside = kneeConfigured && (bottom < Number(minAngle) || bottom > Number(maxAngle));
+                    const trunkOutside = maxTrunkAngle !== '' && peakTrunkLean !== null && peakTrunkLean > Number(maxTrunkAngle);
+                    const asymmetryOutside = maxAsymmetry !== '' && asymmetry !== null && asymmetry > Number(maxAsymmetry);
+                    const configuredMetricMissing = (maxTrunkAngle !== '' && peakTrunkLean === null) || (maxAsymmetry !== '' && asymmetry === null);
+                    const hasAnyLimit = kneeConfigured || maxTrunkAngle !== '' || maxAsymmetry !== '';
+                    const verdict: Rep['verdict'] = kneeOutside || trunkOutside || asymmetryOutside
+                      ? 'outside range'
+                      : configuredMetricMissing
+                        ? 'not assessable'
+                        : hasAnyLimit
+                          ? 'within range'
+                          : 'range not set';
+                    const cues: string[] = [];
+                    if (kneeOutside) cues.push(bottom < Number(minAngle) ? 'You moved beyond the prescribed depth; reduce squat depth.' : 'Reach the prescribed depth, if comfortable.');
+                    else if (kneeConfigured) cues.push('Knee depth is within the prescribed range.');
+                    if (trunkOutside) cues.push(`Trunk lean reached ${peakTrunkLean}°, above the therapist-set ${maxTrunkAngle}° limit.`);
+                    else if (maxTrunkAngle !== '' && peakTrunkLean === null) cues.push('Trunk lean could not be assessed because shoulder or hip landmarks were not visible enough.');
+                    if (asymmetryOutside && asymmetry !== null) cues.push(`Knee angles differed by ${asymmetry}°, above the therapist-set ${maxAsymmetry}° limit.`);
+                    else if (maxAsymmetry !== '' && asymmetry === null) cues.push('Knee asymmetry could not be assessed because both knees were not visible enough.');
+                    if (!hasAnyLimit) cues.push('Set at least one therapist-prescribed limit to assess this rep.');
+                    const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
+                    setReps((old) => [...old, { number: old.length + 1, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration, verdict, cue: cues.join(' ') }]);
                   }
-                  phaseRef.current = 'ready'; lowRef.current = null; startAngleRef.current = null; setPhase('Return to a comfortable start');
+                  phaseRef.current = 'ready'; lowRef.current = null; startAngleRef.current = null;
+                  startTimeRef.current = null; repSamplesRef.current = []; setPhase('Return to a comfortable start');
                 }
-                else if (candidate > (lowRef.current ?? candidate) + 5) setPhase('Rise with control');
+                else if (smoothed > (lowRef.current ?? smoothed) + 5) setPhase('Rise with control');
               }
             }
-          } else { setTracking('No pose — step back into view'); setAngleNow(null); }
+            else { setTracking('Pose detected · move knees and ankles into view'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }
+          } else { setTracking('No pose — step back into view'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }
         }
         rafRef.current = requestAnimationFrame(loop);
       };
@@ -169,9 +253,23 @@ export default function LiveSession() {
         <aside className="coach-column">
           <div className="panel-heading"><div><p className="eyebrow">YOUR SESSION</p><h2>Live coach</h2></div><span className="rep-count"><b>{reps.length.toString().padStart(2, '0')}</b><small>REPS</small></span></div>
           <div className="phase-card"><span className="micro-label">MOVEMENT CUE</span><strong>{running ? phase : 'Ready when you are'}</strong><p>{latest?.cue ?? (running ? 'Move at a comfortable pace. Feedback appears after each completed rep.' : 'Start the camera to see your pose and movement cues.')}</p></div>
-          <div className="metric-row"><div><span className="micro-label">KNEE ANGLE</span><b>{angleNow === null ? '—' : `${angleNow}°`}</b></div><div><span className="micro-label">TRACKING</span><b className="tracking-text">{running ? (tracking === 'Pose detected' ? 'Good' : 'Adjust') : 'Off'}</b></div></div>
-          <div className="rom-panel"><div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div><p className="rom-copy">Enter the knee angle range prescribed for this patient. A rep is assessed at its deepest point.</p><div className="range-inputs"><label>Minimum angle <span><input type="number" min="30" max="180" placeholder="e.g. 80" value={minAngle} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label><label>Maximum angle <span><input type="number" min="30" max="180" placeholder="e.g. 110" value={maxAngle} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label></div><p className="local-hint">These settings are held in this browser only; patient plans are not connected yet.</p></div>
-          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom angle · {latest.angle}°</b><small>{latest.cue}</small></div><span className={latest.verdict === 'within range' ? 'verdict pass' : 'verdict pending'}>{latest.verdict === 'within range' ? 'IN RANGE' : minAngle && maxAngle ? 'REVIEW' : 'SET ROM'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
+          <div className="metric-row">
+            <div><span className="micro-label">KNEE ANGLE</span><b>{angleNow === null ? '—' : `${angleNow}°`}</b></div>
+            <div><span className="micro-label">TRUNK LEAN</span><b>{trunkNow === null ? '—' : `${trunkNow}°`}</b></div>
+            <div><span className="micro-label">ASYMMETRY</span><b>{asymmetryNow === null ? '—' : `${asymmetryNow}°`}</b></div>
+          </div>
+          <div className="rom-panel">
+            <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div>
+            <p className="rom-copy">Set the prescribed knee angle range at the bottom of each rep. Optional limits can assess trunk lean and knee asymmetry. Only the limits entered here are evaluated.</p>
+            <div className="range-inputs">
+              <label>Minimum knee angle <span><input type="number" min="30" max="180" placeholder="e.g. 80" value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
+              <label>Maximum knee angle <span><input type="number" min="30" max="180" placeholder="e.g. 110" value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
+              <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => setMaxTrunkAngle(e.target.value)}/>°</span></label>
+              <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => setMaxAsymmetry(e.target.value)}/>°</span></label>
+            </div>
+            <p className="local-hint">These therapist-entered settings stay in this browser for now; patient plans are not connected yet.</p>
+          </div>
+          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
         </aside>
       </section>
       <footer className="disclaimer"><span>FOR GUIDANCE ONLY</span><p>Kinexa is a movement feedback prototype, not a medical device. Angle estimates can be affected by camera position and visibility. Follow your physiotherapist’s advice.</p><span>V0.2 · LIVE</span></footer>
