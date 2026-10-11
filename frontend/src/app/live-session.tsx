@@ -359,11 +359,11 @@ export default function LiveSession() {
               <CartesianGrid stroke="#e8ece7" strokeDasharray="3 4" vertical={false}/>
               <XAxis dataKey="seconds" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => `${value.toFixed(0)}s`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={{ stroke: '#e3e8e2' }} minTickGap={24}/>
               <YAxis type="number" domain={[30, 180]} ticks={[60, 90, 120, 150, 180]} tickFormatter={(value: number) => `${value}°`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={false} width={42}/>
-              <Tooltip labelFormatter={(value: number) => `${Number(value).toFixed(1)} seconds`} formatter={(value: number, name: string) => [`${value}°`, name === 'leftKnee' ? 'Left knee' : 'Right knee']} contentStyle={{ border: '1px solid #e3e8e2', borderRadius: 2, fontSize: 10 }}/>
+              <Tooltip labelFormatter={(value: number) => `${Number(value).toFixed(1)} seconds`} formatter={(value: number, name: string) => [`${value}°`, name]} contentStyle={{ border: '1px solid #e3e8e2', borderRadius: 2, fontSize: 10 }}/>
               {minAngle !== '' && maxAngle !== '' && <ReferenceArea y1={Number(minAngle)} y2={Number(maxAngle)} fill="#79d69d" fillOpacity={0.16} strokeOpacity={0}/>}
               {repMarkers.map((time, index) => <ReferenceLine key={`rep-${index}-${time.toFixed(2)}`} x={time} stroke="#81918a" strokeDasharray="3 4" strokeWidth={1}/>) }
-              <Line type="monotone" dataKey="leftKnee" name="Left knee" stroke="#167c69" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
-              <Line type="monotone" dataKey="rightKnee" name="Right knee" stroke="#d69b35" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
+              <Line type="monotone" dataKey="leftKnee" name="Your left knee" stroke="#167c69" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
+              <Line type="monotone" dataKey="rightKnee" name="Your right knee" stroke="#d69b35" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
             </LineChart></ResponsiveContainer></div> : <p className="angle-chart-empty">Start the camera to see both knee angles move through the session.</p>}
           </section>
           <div className="rom-panel">
