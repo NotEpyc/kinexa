@@ -5,6 +5,21 @@ from typing import List, Optional
 import numpy as np
 
 
+# Canonical model input schema. Training and inference must use this exact order.
+SQUAT_MODEL_FEATURES = (
+    "min_left_knee_angle",
+    "min_right_knee_angle",
+    "knee_asymmetry",
+    "min_hip_angle",
+    "max_trunk_lean",
+    "trunk_lean_at_bottom",
+    "duration",
+    "descent_time",
+    "ascent_time",
+    "smoothness",
+)
+
+
 @dataclass
 class SquatFeatures:
     """Per-rep squat features (matching PRD §6.5 table)."""
@@ -37,6 +52,14 @@ class SquatFeatures:
     start_time: float
     bottom_time: float
     end_time: float
+
+    def as_model_dict(self) -> dict[str, float]:
+        """Return the canonical FR-5 model features, excluding frame/timestamp metadata."""
+        return {name: float(getattr(self, name)) for name in SQUAT_MODEL_FEATURES}
+
+    def as_model_vector(self) -> np.ndarray:
+        """Return the canonical model features in SQUAT_MODEL_FEATURES order."""
+        return np.asarray([getattr(self, name) for name in SQUAT_MODEL_FEATURES], dtype=np.float64)
 
 
 def extract_squat_features(

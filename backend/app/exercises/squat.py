@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import List, Optional
+import os
 import numpy as np
 
 from ..pose import (
@@ -27,6 +28,7 @@ from ..rules.engine import (
     Side,
     Phase,
 )
+from ..models.loader import get_model_loader
 
 
 @dataclass
@@ -82,6 +84,10 @@ class SquatExercise:
     
     def __init__(self, model_path: str = 'pose_landmarker_full.task'):
         self.pose_extractor = PoseExtractor(model_path)
+        self.model_loader = get_model_loader()
+        configured_model = os.getenv("KINEXA_QUALITY_MODEL", "").strip()
+        if configured_model and not self.model_loader.load(configured_model):
+            self.model_loader = get_model_loader()
     
     def analyze_video(self, video_path: str, rules_engine: Optional['RulesEngine'] = None) -> SquatAnalysisResult:
         """
@@ -223,7 +229,7 @@ class SquatExercise:
             ]
             
             # 6. Rules evaluation
-            ml_output = None  # TODO: ML model inference
+            ml_output = self.model_loader.assess(features.as_model_dict()) if self.model_loader.is_loaded else None
             if rules_engine:
                 assessment = rules_engine.evaluate(measurements, ml_output)
             else:

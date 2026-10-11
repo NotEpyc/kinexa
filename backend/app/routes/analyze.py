@@ -275,6 +275,18 @@ async def analyze_video(
             )
             rep_results.append(rep_result)
         
+        model_loader = get_model_loader()
+        configured_quality_model = os.getenv("KINEXA_QUALITY_MODEL", "").strip()
+        active_quality_model = (
+            model_loader.metadata.version
+            if model_loader.is_loaded and model_loader.metadata and model_loader.metadata.exercise == exercise
+            else None
+        )
+        if configured_quality_model and active_quality_model is None:
+            result.warnings.append(
+                f"Configured quality model '{configured_quality_model}' could not be loaded; therapist ROM rules were used."
+            )
+
         # Calculate score (percentage of correct reps)
         total = len(rep_results)
         score = int((correct_count / total * 100)) if total > 0 else 0
@@ -282,7 +294,7 @@ async def analyze_video(
         return AnalyzeResponse(
             analysis_id=str(uuid.uuid4())[:8],
             exercise=exercise,
-            model_version="squat_rules_v0",  # Rules-first, no ML yet
+            model_version=active_quality_model or "squat_rules_v0",
             total_reps=total,
             correct_reps=correct_count,
             incorrect_reps=incorrect_count,

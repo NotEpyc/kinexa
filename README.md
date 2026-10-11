@@ -6,7 +6,11 @@ An AI-powered platform where physiotherapists define patient-specific exercise l
 
 The frontend now supports a browser-camera live squat session using MediaPipe Pose Landmarker. It estimates knee angle on each camera frame, detects completed squat repetitions, and compares bottom-of-rep knee angle with a therapist-entered range. The existing `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`, so the backend is not required for browser-side pose tracking. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend and open `http://localhost:3000`.
 
-The ROM inputs are currently session-local and are not saved to patient plans. This is a rules-based prototype, not a trained form-quality ML model or a medical device. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
+The ROM inputs are currently session-local and are not saved to patient plans. Live camera feedback currently uses browser-side pose tracking and therapist-set ROM rules; it does not yet call a trained ML model. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
+
+### Phase C: ML prototype status
+
+The backend now has a shared FR-5 squat feature schema, subject-grouped RF/XGBoost training scaffolding, artifact metadata, optional per-rep inference, and therapist-rule precedence. **No quality model has been trained or shipped yet.** Training requires a per-rep feature table with correct/incorrect labels and subject IDs; the current local KIMORE/UI-PRMD extracts are not sufficient for defensible video-to-MediaPipe training. See [dataset audit and candidate sources](DATASETS.md) and the [training instructions](backend/ml/training/README.md). When a validated model artifact is available, set `KINEXA_QUALITY_MODEL=squat_rf_v1` for backend inference. The current live browser session remains rules-only until a compatible trained model is available and live feature-to-model integration is completed.
 
 ## Architecture
 
@@ -82,7 +86,7 @@ python -c "import mediapipe as mp; from mediapipe.tasks import python; from medi
 |-------|-------|
 | A | Research & reuse: obtain KIMORE/UI-PRMD, validate MediaPipe |
 | B | **Rules & upload pipeline**: video → MediaPipe → angles → reps → rule flags |
-| C | ML prototype: train on KIMORE, optional validate on UI-PRMD |
+| C | ML prototype: subject-independent training scaffold and optional inference are implemented; training/validation awaits a suitable subject-labelled feature table |
 | D | Core contribution: explainability, ROM customisation, decision layer |
 | E | Backend API: `/analyze`, model loading, structured JSON |
 | F | Frontend: dashboard, patients, plan editor, upload, results |

@@ -139,10 +139,15 @@ class RulesEngine:
         # Determine overall verdict
         has_violation = any(f.severity == Verdict.FLAG for f in flags)
         has_advisory = any(f.severity == Verdict.ADVISORY for f in flags)
+        ml_prediction = str((ml_output or {}).get("prediction", "")).strip().casefold()
+        ml_task = str((ml_output or {}).get("task", "")).strip().casefold()
+        ml_advisory = ml_task == "classification" and ml_prediction in {
+            "incorrect", "needs_attention", "poor", "incorrect_form", "unsafe"
+        }
         
         if has_violation:
             status = Verdict.FLAG
-        elif has_advisory:
+        elif has_advisory or ml_advisory:
             status = Verdict.ADVISORY
         else:
             status = Verdict.PASS
