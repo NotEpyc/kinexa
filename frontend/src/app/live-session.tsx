@@ -37,6 +37,7 @@ type DetectorLog = {
   leftVisibleFrames: number | null;
   rightVisibleFrames: number | null;
   repFrames: number | null;
+  bottomAsymmetry: number | null;
   minBilateralMovement: number;
   bilateralRatio: number | null;
   triggerThreshold: number;
@@ -51,6 +52,7 @@ type DetectorLog = {
 const MIN_REP_DURATION_SECONDS = 0.7;
 const MIN_REP_GAP_SECONDS = 0.8;
 const MIN_BILATERAL_TRAVEL_RATIO = 0.35;
+const MAX_COUNTED_KNEE_ASYMMETRY = 45;
 const KNEE_LANDMARK_VISIBILITY_THRESHOLD = 0.65;
 const BASELINE_ADAPTATION_DEGREES_PER_SECOND = 2;
 const MAX_STANDING_RETURN_OFFSET_DEGREES = 18;
@@ -341,6 +343,7 @@ export default function LiveSession() {
                     baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
                     leftExcursion: null, rightExcursion: null,
                     leftVisibleFrames: null, rightVisibleFrames: null, repFrames: null,
+                    bottomAsymmetry: null,
                     minBilateralMovement: Math.max(10, Math.round(Number(minRepMovement) * 0.5)),
                     bilateralRatio: null,
                     minMovement: Number(minRepMovement), duration: 0, minDuration: MIN_REP_DURATION_SECONDS,
@@ -380,6 +383,16 @@ export default function LiveSession() {
                   const rightExcursion = rightEarly.length >= minStartFrames && rightValues.length >= 3
                     ? Number((Math.max(...rightEarly) - Math.min(...rightValues)).toFixed(1))
                     : null;
+                  const pairedSamples = repSamples.filter((current) => current.leftKnee !== null && current.rightKnee !== null);
+                  const deepestBilateralSample = pairedSamples.reduce<RepSample | null>((deepest, current) => {
+                    if (deepest === null) return current;
+                    const currentMean = ((current.leftKnee as number) + (current.rightKnee as number)) / 2;
+                    const deepestMean = ((deepest.leftKnee as number) + (deepest.rightKnee as number)) / 2;
+                    return currentMean < deepestMean ? current : deepest;
+                  }, null);
+                  const bottomAsymmetry = pairedSamples.length < 3 || deepestBilateralSample === null
+                    ? null
+                    : Number(Math.abs((deepestBilateralSample.leftKnee as number) - (deepestBilateralSample.rightKnee as number)).toFixed(1));
                   const bilateralRatio = leftExcursion !== null && rightExcursion !== null
                     ? Number((Math.min(leftExcursion, rightExcursion) / Math.max(leftExcursion, rightExcursion, 1)).toFixed(2))
                     : null;
@@ -391,6 +404,8 @@ export default function LiveSession() {
                   if (leftExcursion === null || rightExcursion === null) rejectionReasons.push(`bilateral knee travel could not be confirmed (left visible ${leftVisibleFrames}/${repSamples.length} rep frames, right ${rightVisibleFrames}/${repSamples.length}); keep both knees and ankles in view`);
                   else if (leftExcursion < minBilateralMovement || rightExcursion < minBilateralMovement) rejectionReasons.push(`both knees must move at least ${minBilateralMovement}° (left ${leftExcursion}°, right ${rightExcursion}°)`);
                   else if (bilateralRatio !== null && bilateralRatio < MIN_BILATERAL_TRAVEL_RATIO) rejectionReasons.push(`knee travel was too one-sided (left ${leftExcursion}°, right ${rightExcursion}°; weaker side ${Math.round(bilateralRatio * 100)}% of stronger side, minimum ${Math.round(MIN_BILATERAL_TRAVEL_RATIO * 100)}%)`);
+                  if (bottomAsymmetry === null) rejectionReasons.push('bottom knee symmetry could not be confirmed; keep both knees visible throughout the movement');
+                  else if (bottomAsymmetry > MAX_COUNTED_KNEE_ASYMMETRY) rejectionReasons.push(`bottom knee angles differed by ${bottomAsymmetry}°, above the ${MAX_COUNTED_KNEE_ASYMMETRY}° rep-count limit; this looks like one-sided movement`);
                   if (duration < MIN_REP_DURATION_SECONDS) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${MIN_REP_DURATION_SECONDS}s minimum`);
                   if (gap !== null && gap < MIN_REP_GAP_SECONDS) rejectionReasons.push(`rep gap ${gap.toFixed(2)}s was below ${MIN_REP_GAP_SECONDS}s minimum`);
                   const event = rejectionReasons.length ? 'rejected' : 'counted';
@@ -398,6 +413,7 @@ export default function LiveSession() {
                     time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
                     baseline: Math.round(baseline), bottom: Math.round(bottom), excursion: Number(excursion.toFixed(1)),
                     leftExcursion, rightExcursion, leftVisibleFrames, rightVisibleFrames, repFrames: repSamples.length,
+                    bottomAsymmetry,
                     minBilateralMovement, bilateralRatio,
                     triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
                     duration: Number(duration.toFixed(2)), minDuration: MIN_REP_DURATION_SECONDS,
@@ -513,8 +529,8 @@ export default function LiveSession() {
           <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{latest.model.status === 'checking' ? 'Checking general-form model…' : latest.model.status === 'available' ? `Research model advisory: ${latest.model.task === 'regression' ? `predicted score ${latest.model.prediction}` : latest.model.prediction === 'incorrect' ? 'possible form concern' : latest.model.prediction === 'correct' ? 'no general form concern' : `prediction ${latest.model.prediction ?? 'unavailable'}`}${latest.model.confidence === undefined ? '' : ` · ${(latest.model.confidence * 100).toFixed(0)}% confidence`} · therapist ROM rules take precedence; camera validation pending.` : `Model advisory unavailable: ${latest.model.reason ?? 'insufficient visible data'}`}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
-            <p>Each event shows knee travel on both sides, travel balance, duration, and spacing. A rep needs at least 10° travel in each knee, with the weaker side reaching at least 35% of the stronger side. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
-            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · visible L/R {entry.leftVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} · {entry.rightVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} frames · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / 35% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+            <p>Each event shows knee travel on both sides, bottom-position angle difference, visibility, duration, and spacing. A rep needs bilateral travel and no more than 45° difference between knee angles at the bottom. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · bottom difference {entry.bottomAsymmetry === null ? '—' : `${entry.bottomAsymmetry}°`} / {MAX_COUNTED_KNEE_ASYMMETRY}° maximum · visible L/R {entry.leftVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} · {entry.rightVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} frames · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / 35% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
           </details>
         </aside>
       </section>
