@@ -27,6 +27,9 @@ type DetectorLog = {
   baseline: number;
   bottom: number | null;
   excursion: number;
+  leftExcursion: number | null;
+  rightExcursion: number | null;
+  minBilateralMovement: number;
   triggerThreshold: number;
   minMovement: number;
   duration: number;
@@ -214,8 +217,10 @@ export default function LiveSession() {
                   logDetector({
                     time: new Date().toLocaleTimeString(), event: 'started', angle: Math.round(smoothed),
                     baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
+                    leftExcursion: null, rightExcursion: null,
+                    minBilateralMovement: Math.max(10, Math.round(Number(minRepMovement) * 0.5)),
                     minMovement: Number(minRepMovement), duration: 0, minDuration: MIN_REP_DURATION_SECONDS,
-                    gap: lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current,
+                    gap: lastRepEndTimeRef.current === null ? null : Number((now / 1000 - lastRepEndTimeRef.current).toFixed(2)),
                     minGap: MIN_REP_GAP_SECONDS,
                   });
                 }
@@ -226,16 +231,27 @@ export default function LiveSession() {
                   const bottom = lowRef.current ?? smoothed;
                   const baseline = startAngleRef.current ?? smoothed;
                   const excursion = baseline - bottom;
+                  const repSamples = repSamplesRef.current;
+                  const leftStart = repSamples[0]?.leftKnee ?? null;
+                  const rightStart = repSamples[0]?.rightKnee ?? null;
+                  const leftBottom = repSamples.reduce<number | null>((lowest, current) => current.leftKnee === null ? lowest : Math.min(lowest ?? current.leftKnee, current.leftKnee), null);
+                  const rightBottom = repSamples.reduce<number | null>((lowest, current) => current.rightKnee === null ? lowest : Math.min(lowest ?? current.rightKnee, current.rightKnee), null);
+                  const leftExcursion = leftStart !== null && leftBottom !== null ? Number((leftStart - leftBottom).toFixed(1)) : null;
+                  const rightExcursion = rightStart !== null && rightBottom !== null ? Number((rightStart - rightBottom).toFixed(1)) : null;
+                  const minBilateralMovement = Math.max(10, Math.round(excursionThresholdRef.current * 0.5));
                   const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
                   const gap = lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current;
                   const rejectionReasons: string[] = [];
                   if (excursion < excursionThresholdRef.current) rejectionReasons.push(`movement ${excursion.toFixed(1)}° was below ${excursionThresholdRef.current}° minimum`);
+                  if (leftExcursion === null || rightExcursion === null) rejectionReasons.push('both knee angles were unavailable at the rep start or during movement, so bilateral movement could not be confirmed');
+                  else if (leftExcursion < minBilateralMovement || rightExcursion < minBilateralMovement) rejectionReasons.push(`both knees must move at least ${minBilateralMovement}° (left ${leftExcursion}°, right ${rightExcursion}°)`);
                   if (duration < MIN_REP_DURATION_SECONDS) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${MIN_REP_DURATION_SECONDS}s minimum`);
                   if (gap !== null && gap < MIN_REP_GAP_SECONDS) rejectionReasons.push(`rep gap ${gap.toFixed(2)}s was below ${MIN_REP_GAP_SECONDS}s minimum`);
                   const event = rejectionReasons.length ? 'rejected' : 'counted';
                   logDetector({
                     time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
                     baseline: Math.round(baseline), bottom: Math.round(bottom), excursion: Number(excursion.toFixed(1)),
+                    leftExcursion, rightExcursion, minBilateralMovement,
                     triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
                     duration: Number(duration.toFixed(2)), minDuration: MIN_REP_DURATION_SECONDS,
                     gap: gap === null ? null : Number(gap.toFixed(2)), minGap: MIN_REP_GAP_SECONDS,
@@ -324,8 +340,8 @@ export default function LiveSession() {
           <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
-            <p>Each event shows the smoothed knee angle, standing baseline, rep-start trigger, measured travel, minimum movement, duration, and spacing. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
-            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · start trigger {entry.triggerThreshold}° · travel {entry.excursion}° / {entry.minMovement}° minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+            <p>Each event shows knee travel on both sides, the movement threshold, duration, and spacing. A rep counts only when both knee angles are available and each moves at least 50% of the configured minimum travel (at least 10°). The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
           </details>
         </aside>
       </section>

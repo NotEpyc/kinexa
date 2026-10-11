@@ -100,7 +100,7 @@ A personalised, explainable exercise assessment tool that integrates existing po
 - FR-3.2 Mask frames where the relevant landmarks fall below a visibility threshold.
 
 ### 6.4 Rep detection (FR-4)
-- FR-4.1 Detect reps from the knee-angle signal (valleys via peak detection, with minimum depth and minimum spacing parameters).
+- FR-4.1 Detect reps from knee-angle signals (valleys via peak detection, with minimum movement and minimum spacing parameters). For squat counting, confirm movement from both knees; a single-knee bend does not count as a squat rep.
 - FR-4.2 Define each rep as standing, descent, bottom, ascent, standing.
 - FR-4.3 Return start/bottom/end frame and timestamps per rep.
 - FR-4.4 Handle partial reps and false positives by requiring a minimum range of motion; report ignored segments.
@@ -165,7 +165,7 @@ Final feature list is confirmed after dataset exploration (Phase A/B).
 
 ### 6.12 Live camera feedback (FR-12)
 - FR-12.1 Capture camera frames in the browser and run MediaPipe Pose on each available video frame. The live-session prototype processes camera frames locally and does not upload them to the server.
-- FR-12.2 Display pose tracking status, live knee angle, and movement phase; smooth the knee-angle signal before rep detection. Separate the minimum movement threshold from the patient's target ROM, enforce a minimum cycle duration and spacing, and log angle-based counted/rejected cycles for review.
+- FR-12.2 Display pose tracking status, live knee angle, and movement phase; smooth the knee-angle signal before rep detection. Separate the minimum movement threshold from the patient's target ROM, confirm movement from both knees so a single-knee bend is not counted, enforce a minimum cycle duration and spacing, and log per-side travel plus counted/rejected cycles for review.
 - FR-12.3 Detect completed squat reps and report bottom knee angle, trunk lean, knee asymmetry when both knees are visible, and rep duration.
 - FR-12.4 Apply only therapist-entered limits. Knee min/max, maximum trunk lean, and maximum knee asymmetry may be configured independently. A missing limit is not a violation. If a configured metric cannot be measured because required landmarks are not visible, report it as not assessable rather than passing it.
 - FR-12.5 Show a plain-language cue after each completed rep and keep the safety disclaimer visible. Do not describe a rep as clinically correct based only on camera estimates.
