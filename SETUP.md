@@ -2,49 +2,44 @@
 
 ## Prerequisites
 
-- **Python 3.13+** (tested on 3.13)
-- **PostgreSQL 15+** (for production) or SQLite (for development)
+- **Node.js 20+** and npm
+- **Python 3.13+** (needed only for the FastAPI backend)
 - **Git**
 - **Windows/Linux/macOS**
+
+PostgreSQL is **not connected to the current application yet**. SQLAlchemy/PostgreSQL packages are present, but there is no configured database engine, schema/migrations, or persistent CRUD implementation. You do not need to install a database to run the current prototype.
 
 ## Quick Start
 
 ```bash
-# 1. Clone the repository
 git clone https://github.com/NotEpyc/kinexa.git
 cd kinexa
-
-# 2. Download datasets (see "Datasets" section below)
-# Extract to data/raw/kimore/ and data/raw/ui-prmd/
-
-# 3. Backend setup
-cd backend
-python -m venv venv
-# Windows:
-venv\Scripts\activate
-# Linux/macOS:
-source venv/bin/activate
-
-pip install -r requirements.txt
-
-# 4. Download MediaPipe model
-python download_model.py
-
-# 5. Configure environment
-cp .env.example .env  # Edit with your database URL
-
-# 6. Run backend
-python -m uvicorn app.main:app --reload
-
-# 7. Frontend setup (separate terminal)
-cd ../frontend
 npm install
 npm run dev
 ```
 
+Open **http://localhost:3000** and allow camera access. Live squat feedback runs in the browser. It requires `backend/models/pose_landmarker_full.task`; this file is ignored by Git, so obtain the MediaPipe Pose Landmarker Full model bundle from the [official MediaPipe guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker) and save it at that path. The browser also downloads MediaPipe WASM assets from jsDelivr, so it needs network access on first load.
+
+### Optional: start the FastAPI backend
+
+Use a second terminal from the repository root:
+
+```bash
+cd backend
+python -m venv .venv
+# Windows PowerShell:
+.venv\Scripts\Activate.ps1
+# macOS/Linux (use this instead of the Windows activation command):
+# source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --reload
+```
+
+The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. The current live page does not require the backend; upload analysis and backend API work do. No `.env` or database setup is currently required. The backend uses default in-code ROM limits for upload analysis; patient-specific values are not persisted yet.
+
 ## Datasets
 
-### Required Datasets (Download Manually)
+### Optional Training Datasets (Download Manually)
 
 | Dataset | Source | Extract To |
 |---------|--------|------------|
@@ -74,19 +69,9 @@ data/
 
 ## Backend Configuration
 
-### Environment Variables (.env)
-```bash
-# Database (SQLite for dev, PostgreSQL for prod)
-DATABASE_URL=sqlite+aiosqlite:///./kinexa.db
-# DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/kinexa
+### Environment Variables
 
-# MediaPipe
-MEDIAPIPE_MODEL_PATH=backend/models/pose_landmarker_full.task
-
-# App
-SECRET_KEY=your-secret-key-here
-DEBUG=true
-```
+No environment variables are needed to run the current prototype. The optional backend quality-model loader can be selected with `KINEXA_QUALITY_MODEL`, but no trained quality model artifact is currently shipped.
 
 ### Run Backend
 ```bash
@@ -119,38 +104,15 @@ cd frontend
 npm install
 npm run dev
 # Frontend at http://localhost:3000
-# Proxies API calls to backend at http://localhost:8000
 ```
 
 ## MediaPipe Model
 
-The model is downloaded automatically:
-```bash
-python download_model.py
-# Downloads to backend/models/pose_landmarker_full.task
-```
+The `.task` model bundle is not downloaded automatically or included in Git. Download the Pose Landmarker Full bundle from the [official MediaPipe guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker) and place it at `backend/models/pose_landmarker_full.task`. The live frontend loads it through `/api/pose-model`.
 
-Or manually from: https://developers.google.com/mediapipe/solutions/vision/pose_landmarker
+## Database Status
 
-## Database
-
-### Development (SQLite)
-```bash
-# Automatic - creates kinexa.db on first run
-DATABASE_URL=sqlite+aiosqlite:///./kinexa.db
-```
-
-### Production (PostgreSQL)
-```bash
-# 1. Create database
-createdb kinexa
-
-# 2. Run migrations
-alembic upgrade head
-
-# 2. Set environment
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/kinexa
-```
+PostgreSQL is the planned database, but it is **not implemented or used by the current code**. Patient and plan create routes return generated IDs without storing records; list, update, and analysis-history routes are unfinished. SQLite is not currently wired either. Database setup instructions will be added when the database layer and migrations exist.
 
 ## Development Workflow
 
@@ -226,10 +188,10 @@ All dependencies pinned to versions with Python 3.13 wheels:
 | **A** | ✅ | Research, datasets, MediaPipe validation |
 | **B** | ✅ | Rules-first pipeline (rules → ML) |
 | **C** | 🔄 | ML prototype (RF/XGBoost on KIMORE/UI-PRMD) |
-| **D** | ⏳ | Backend API + model integration |
-| **E** | ⏳ | Frontend (Next.js + Tailwind) |
-| **F** | ⏳ | Database + auth + history |
-| **G** | ⏳ | Validation + v2 (real-time camera) |
+| **D** | 🔄 | Backend API and optional model inference scaffold; no trained quality model shipped |
+| **E** | 🔄 | Live browser squat prototype with therapist-entered ROM; live ML bridge is not implemented |
+| **F** | ⏳ | PostgreSQL persistence, auth, and analysis history |
+| **G** | ⏳ | Subject-independent and physiotherapist validation |
 
 ## License
 Student project - see PRD.md for licensing details on datasets.
