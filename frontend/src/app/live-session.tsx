@@ -32,6 +32,7 @@ type DetectorLog = {
   leftExcursion: number | null;
   rightExcursion: number | null;
   minBilateralMovement: number;
+  bilateralRatio: number | null;
   triggerThreshold: number;
   minMovement: number;
   duration: number;
@@ -43,6 +44,7 @@ type DetectorLog = {
 
 const MIN_REP_DURATION_SECONDS = 0.7;
 const MIN_REP_GAP_SECONDS = 0.8;
+const MIN_BILATERAL_TRAVEL_RATIO = 0.35;
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -185,6 +187,12 @@ export default function LiveSession() {
               ctx.beginPath(); ctx.moveTo(screen[a].x * canvas.width, screen[a].y * canvas.height); ctx.lineTo(screen[b].x * canvas.width, screen[b].y * canvas.height); ctx.stroke();
             }
             for (const p of screen) if ((p.visibility ?? 0) > 0.35) { ctx.beginPath(); ctx.arc(p.x * canvas.width, p.y * canvas.height, Math.max(3, canvas.width / 240), 0, Math.PI * 2); ctx.fill(); }
+            for (const [index, color] of [[25, '#167c69'], [26, '#d69b35']] as const) {
+              if ((screen[index]?.visibility ?? 0) < 0.45) continue;
+              ctx.fillStyle = color; ctx.beginPath(); ctx.arc(screen[index].x * canvas.width, screen[index].y * canvas.height, Math.max(5, canvas.width / 180), 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.fillStyle = '#f5b544';
+            // MediaPipe indices use the subject's anatomical left/right, even though the camera preview is mirrored.
             const leftVisible = [23, 25, 27].every((i) => (screen[i]?.visibility ?? 0) >= 0.45);
             const rightVisible = [24, 26, 28].every((i) => (screen[i]?.visibility ?? 0) >= 0.45);
             const left = leftVisible ? angle(points[23], points[25], points[27]) : null;
@@ -229,6 +237,7 @@ export default function LiveSession() {
                     baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
                     leftExcursion: null, rightExcursion: null,
                     minBilateralMovement: Math.max(10, Math.round(Number(minRepMovement) * 0.5)),
+                    bilateralRatio: null,
                     minMovement: Number(minRepMovement), duration: 0, minDuration: MIN_REP_DURATION_SECONDS,
                     gap: lastRepEndTimeRef.current === null ? null : Number((now / 1000 - lastRepEndTimeRef.current).toFixed(2)),
                     minGap: MIN_REP_GAP_SECONDS,
@@ -248,6 +257,9 @@ export default function LiveSession() {
                   const rightBottom = repSamples.reduce<number | null>((lowest, current) => current.rightKnee === null ? lowest : Math.min(lowest ?? current.rightKnee, current.rightKnee), null);
                   const leftExcursion = leftStart !== null && leftBottom !== null ? Number((leftStart - leftBottom).toFixed(1)) : null;
                   const rightExcursion = rightStart !== null && rightBottom !== null ? Number((rightStart - rightBottom).toFixed(1)) : null;
+                  const bilateralRatio = leftExcursion !== null && rightExcursion !== null
+                    ? Number((Math.min(leftExcursion, rightExcursion) / Math.max(leftExcursion, rightExcursion, 1)).toFixed(2))
+                    : null;
                   const minBilateralMovement = Math.max(10, Math.round(excursionThresholdRef.current * 0.5));
                   const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
                   const gap = lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current;
@@ -255,13 +267,14 @@ export default function LiveSession() {
                   if (excursion < excursionThresholdRef.current) rejectionReasons.push(`movement ${excursion.toFixed(1)}° was below ${excursionThresholdRef.current}° minimum`);
                   if (leftExcursion === null || rightExcursion === null) rejectionReasons.push('both knee angles were unavailable at the rep start or during movement, so bilateral movement could not be confirmed');
                   else if (leftExcursion < minBilateralMovement || rightExcursion < minBilateralMovement) rejectionReasons.push(`both knees must move at least ${minBilateralMovement}° (left ${leftExcursion}°, right ${rightExcursion}°)`);
+                  else if (bilateralRatio !== null && bilateralRatio < MIN_BILATERAL_TRAVEL_RATIO) rejectionReasons.push(`knee travel was too one-sided (left ${leftExcursion}°, right ${rightExcursion}°; weaker side ${Math.round(bilateralRatio * 100)}% of stronger side, minimum ${Math.round(MIN_BILATERAL_TRAVEL_RATIO * 100)}%)`);
                   if (duration < MIN_REP_DURATION_SECONDS) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${MIN_REP_DURATION_SECONDS}s minimum`);
                   if (gap !== null && gap < MIN_REP_GAP_SECONDS) rejectionReasons.push(`rep gap ${gap.toFixed(2)}s was below ${MIN_REP_GAP_SECONDS}s minimum`);
                   const event = rejectionReasons.length ? 'rejected' : 'counted';
                   logDetector({
                     time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
                     baseline: Math.round(baseline), bottom: Math.round(bottom), excursion: Number(excursion.toFixed(1)),
-                    leftExcursion, rightExcursion, minBilateralMovement,
+                    leftExcursion, rightExcursion, minBilateralMovement, bilateralRatio,
                     triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
                     duration: Number(duration.toFixed(2)), minDuration: MIN_REP_DURATION_SECONDS,
                     gap: gap === null ? null : Number(gap.toFixed(2)), minGap: MIN_REP_GAP_SECONDS,
@@ -340,11 +353,12 @@ export default function LiveSession() {
             <div><span className="micro-label">ASYMMETRY</span><b>{asymmetryNow === null ? '—' : `${asymmetryNow}°`}</b></div>
           </div>
           <section className="angle-chart-panel" aria-label="Knee angle over time">
-            <div className="angle-chart-header"><span className="micro-label">KNEE ANGLE · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Left</span><span><i className="legend-right"/>Right</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
-            {angleHistory.length > 1 ? <div className="angle-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={angleHistory} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+            <div className="angle-chart-header"><span className="micro-label">KNEE ANGLE · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Your left knee</span><span><i className="legend-right"/>Your right knee</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
+            <p className="angle-chart-note">Left and right refer to your body; the camera preview is mirrored.</p>
+            {angleHistory.length > 1 ? <div className="angle-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={angleHistory} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="#e8ece7" strokeDasharray="3 4" vertical={false}/>
               <XAxis dataKey="seconds" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => `${value.toFixed(0)}s`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={{ stroke: '#e3e8e2' }} minTickGap={24}/>
-              <YAxis type="number" domain={[30, 180]} ticks={[60, 90, 120, 150, 180]} tickFormatter={(value: number) => `${value}°`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={false} width={38}/>
+              <YAxis type="number" domain={[30, 180]} ticks={[60, 90, 120, 150, 180]} tickFormatter={(value: number) => `${value}°`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={false} width={42}/>
               <Tooltip labelFormatter={(value: number) => `${Number(value).toFixed(1)} seconds`} formatter={(value: number, name: string) => [`${value}°`, name === 'leftKnee' ? 'Left knee' : 'Right knee']} contentStyle={{ border: '1px solid #e3e8e2', borderRadius: 2, fontSize: 10 }}/>
               {minAngle !== '' && maxAngle !== '' && <ReferenceArea y1={Number(minAngle)} y2={Number(maxAngle)} fill="#79d69d" fillOpacity={0.16} strokeOpacity={0}/>}
               {repMarkers.map((time, index) => <ReferenceLine key={`rep-${index}-${time.toFixed(2)}`} x={time} stroke="#81918a" strokeDasharray="3 4" strokeWidth={1}/>) }
@@ -367,8 +381,8 @@ export default function LiveSession() {
           <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
-            <p>Each event shows knee travel on both sides, the movement threshold, duration, and spacing. A rep counts only when both knee angles are available and each moves at least 50% of the configured minimum travel (at least 10°). The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
-            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+            <p>Each event shows knee travel on both sides, travel balance, duration, and spacing. A rep needs at least 10° travel in each knee, with the weaker side reaching at least 35% of the stronger side. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / 35% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
           </details>
         </aside>
       </section>
