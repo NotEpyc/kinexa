@@ -20,6 +20,24 @@ type RepSample = {
   primaryKnee: number;
   trunkLean: number | null;
 };
+type DetectorLog = {
+  time: string;
+  event: 'started' | 'counted' | 'rejected';
+  angle: number;
+  baseline: number;
+  bottom: number | null;
+  excursion: number;
+  triggerThreshold: number;
+  minMovement: number;
+  duration: number;
+  minDuration: number;
+  gap: number | null;
+  minGap: number;
+  reason?: string;
+};
+
+const MIN_REP_DURATION_SECONDS = 0.7;
+const MIN_REP_GAP_SECONDS = 0.8;
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -55,6 +73,8 @@ export default function LiveSession() {
   const lowRef = useRef<number | null>(null);
   const startAngleRef = useRef<number | null>(null);
   const startTimeRef = useRef<number | null>(null);
+  const lastRepEndTimeRef = useRef<number | null>(null);
+  const startTriggerThresholdRef = useRef(0);
   const repSamplesRef = useRef<RepSample[]>([]);
   const smoothedAngleRef = useRef<number | null>(null);
   const excursionThresholdRef = useRef(12);
@@ -72,7 +92,14 @@ export default function LiveSession() {
   const [maxAngle, setMaxAngle] = useState('');
   const [maxTrunkAngle, setMaxTrunkAngle] = useState('');
   const [maxAsymmetry, setMaxAsymmetry] = useState('');
+  const [minRepMovement, setMinRepMovement] = useState('20');
   const [reps, setReps] = useState<Rep[]>([]);
+  const [detectorLogs, setDetectorLogs] = useState<DetectorLog[]>([]);
+
+  const logDetector = useCallback((entry: DetectorLog) => {
+    console.info('[Kinexa rep detector]', entry);
+    setDetectorLogs((current) => [...current.slice(-7), entry]);
+  }, []);
 
   const stop = useCallback(() => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -109,6 +136,9 @@ export default function LiveSession() {
           throw new Error(`Enter a valid ${label} between 0° and ${upper}°.`);
         }
       }
+      if (!Number.isFinite(Number(minRepMovement)) || Number(minRepMovement) < 8 || Number(minRepMovement) > 45) {
+        throw new Error('Set minimum knee movement between 8° and 45° per rep.');
+      }
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Camera access requires HTTPS or localhost in a supported browser.');
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
       streamRef.current = stream;
@@ -124,7 +154,7 @@ export default function LiveSession() {
         });
       }
       phaseRef.current = 'ready'; baselineRef.current = null; lowRef.current = null; startAngleRef.current = null;
-      startTimeRef.current = null; repSamplesRef.current = []; smoothedAngleRef.current = null; lastFrameTimeRef.current = -1;
+      startTimeRef.current = null; lastRepEndTimeRef.current = null; repSamplesRef.current = []; smoothedAngleRef.current = null; lastFrameTimeRef.current = -1;
       setRunning(true); setPhase('Hold a comfortable starting position');
       const loop = () => {
         const v = videoRef.current; const canvas = canvasRef.current; const detector = landmarkerRef.current;
@@ -175,22 +205,44 @@ export default function LiveSession() {
                 if (baseline === null) baselineRef.current = smoothed;
                 else if (smoothed >= baseline - 3) baselineRef.current = baseline * 0.92 + smoothed * 0.08;
                 const calibratedTop = baselineRef.current ?? candidate;
-                const configured = minAngle !== '' && maxAngle !== '';
-                const expectedDepthChange = configured ? calibratedTop - Number(maxAngle) : 12;
-                const startThreshold = configured
-                  ? Math.max(3, Math.min(12, Math.round(expectedDepthChange * 0.5)))
-                  : 12;
+                const startThreshold = Math.max(6, Math.min(14, Math.round(Number(minRepMovement) * 0.5)));
                 if (smoothed <= calibratedTop - startThreshold) {
                   phaseRef.current = 'descending'; lowRef.current = smoothed; startAngleRef.current = calibratedTop;
                   startTimeRef.current = now / 1000; repSamplesRef.current = [sample];
-                  excursionThresholdRef.current = startThreshold; setPhase('Lower with control');
+                  startTriggerThresholdRef.current = startThreshold;
+                  excursionThresholdRef.current = Number(minRepMovement); setPhase('Lower with control');
+                  logDetector({
+                    time: new Date().toLocaleTimeString(), event: 'started', angle: Math.round(smoothed),
+                    baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
+                    minMovement: Number(minRepMovement), duration: 0, minDuration: MIN_REP_DURATION_SECONDS,
+                    gap: lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current,
+                    minGap: MIN_REP_GAP_SECONDS,
+                  });
                 }
               } else if (phaseRef.current === 'descending') {
                 lowRef.current = Math.min(lowRef.current ?? smoothed, smoothed);
                 const returnThreshold = Math.max(4, Math.min(7, Math.round((startAngleRef.current ?? candidate) * 0.03)));
                 if (smoothed >= (startAngleRef.current ?? smoothed) - returnThreshold) {
                   const bottom = lowRef.current ?? smoothed;
-                  if ((startAngleRef.current ?? smoothed) - bottom >= excursionThresholdRef.current) {
+                  const baseline = startAngleRef.current ?? smoothed;
+                  const excursion = baseline - bottom;
+                  const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
+                  const gap = lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current;
+                  const rejectionReasons: string[] = [];
+                  if (excursion < excursionThresholdRef.current) rejectionReasons.push(`movement ${excursion.toFixed(1)}° was below ${excursionThresholdRef.current}° minimum`);
+                  if (duration < MIN_REP_DURATION_SECONDS) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${MIN_REP_DURATION_SECONDS}s minimum`);
+                  if (gap !== null && gap < MIN_REP_GAP_SECONDS) rejectionReasons.push(`rep gap ${gap.toFixed(2)}s was below ${MIN_REP_GAP_SECONDS}s minimum`);
+                  const event = rejectionReasons.length ? 'rejected' : 'counted';
+                  logDetector({
+                    time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
+                    baseline: Math.round(baseline), bottom: Math.round(bottom), excursion: Number(excursion.toFixed(1)),
+                    triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
+                    duration: Number(duration.toFixed(2)), minDuration: MIN_REP_DURATION_SECONDS,
+                    gap: gap === null ? null : Number(gap.toFixed(2)), minGap: MIN_REP_GAP_SECONDS,
+                    reason: rejectionReasons.length ? rejectionReasons.join('; ') : 'movement, duration, and spacing thresholds met',
+                  });
+                  if (event === 'counted') {
+                    lastRepEndTimeRef.current = now / 1000;
                     const samples = repSamplesRef.current;
                     const deepest = samples.reduce((lowest, current) => current.primaryKnee < lowest.primaryKnee ? current : lowest, sample);
                     const asymmetry = deepest.leftKnee !== null && deepest.rightKnee !== null ? Math.abs(deepest.leftKnee - deepest.rightKnee) : null;
@@ -216,9 +268,8 @@ export default function LiveSession() {
                     if (asymmetryOutside && asymmetry !== null) cues.push(`Knee angles differed by ${asymmetry}°, above the therapist-set ${maxAsymmetry}° limit.`);
                     else if (maxAsymmetry !== '' && asymmetry === null) cues.push('Knee asymmetry could not be assessed because both knees were not visible enough.');
                     if (!hasAnyLimit) cues.push('Set at least one therapist-prescribed limit to assess this rep.');
-                    const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
                     setReps((old) => [...old, { number: old.length + 1, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration, verdict, cue: cues.join(' ') }]);
-                  }
+                  } else setPhase('Rep not counted · see detector log');
                   phaseRef.current = 'ready'; lowRef.current = null; startAngleRef.current = null;
                   startTimeRef.current = null; repSamplesRef.current = []; setPhase('Return to a comfortable start');
                 }
@@ -266,10 +317,16 @@ export default function LiveSession() {
               <label>Maximum knee angle <span><input type="number" min="30" max="180" placeholder="e.g. 110" value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
               <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => setMaxTrunkAngle(e.target.value)}/>°</span></label>
               <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => setMaxAsymmetry(e.target.value)}/>°</span></label>
+              <label>Minimum knee movement <span><input type="number" min="8" max="45" value={minRepMovement} disabled={running} onChange={(e) => setMinRepMovement(e.target.value)}/>°</span></label>
             </div>
-            <p className="local-hint">These therapist-entered settings stay in this browser for now; patient plans are not connected yet.</p>
+            <p className="local-hint">Minimum knee movement (default 20°) is a rep-detection threshold, separate from prescribed ROM. These settings stay in this browser for now; patient plans are not connected yet.</p>
           </div>
           <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
+          <details className="detector-log">
+            <summary>Rep detector log · {detectorLogs.length} recent events</summary>
+            <p>Each event shows the smoothed knee angle, standing baseline, rep-start trigger, measured travel, minimum movement, duration, and spacing. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · start trigger {entry.triggerThreshold}° · travel {entry.excursion}° / {entry.minMovement}° minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+          </details>
         </aside>
       </section>
       <footer className="disclaimer"><span>FOR GUIDANCE ONLY</span><p>Kinexa is a movement feedback prototype, not a medical device. Angle estimates can be affected by camera position and visibility. Follow your physiotherapist’s advice.</p><span>V0.2 · LIVE</span></footer>

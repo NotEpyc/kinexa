@@ -165,11 +165,12 @@ Final feature list is confirmed after dataset exploration (Phase A/B).
 
 ### 6.12 Live camera feedback (FR-12)
 - FR-12.1 Capture camera frames in the browser and run MediaPipe Pose on each available video frame. The live-session prototype processes camera frames locally and does not upload them to the server.
-- FR-12.2 Display pose tracking status, live knee angle, and movement phase; smooth the knee-angle signal before rep detection.
+- FR-12.2 Display pose tracking status, live knee angle, and movement phase; smooth the knee-angle signal before rep detection. Separate the minimum movement threshold from the patient's target ROM, enforce a minimum cycle duration and spacing, and log angle-based counted/rejected cycles for review.
 - FR-12.3 Detect completed squat reps and report bottom knee angle, trunk lean, knee asymmetry when both knees are visible, and rep duration.
 - FR-12.4 Apply only therapist-entered limits. Knee min/max, maximum trunk lean, and maximum knee asymmetry may be configured independently. A missing limit is not a violation. If a configured metric cannot be measured because required landmarks are not visible, report it as not assessable rather than passing it.
 - FR-12.5 Show a plain-language cue after each completed rep and keep the safety disclaimer visible. Do not describe a rep as clinically correct based only on camera estimates.
 - FR-12.6 Prototype limitation: live ROM limits are currently held in browser state and are not persisted or linked to a patient/plan. Database-backed therapist plans remain required for clinical workflows.
+- FR-12.7 Prototype detector defaults: minimum knee-angle excursion is 20°, minimum cycle duration is 0.7 seconds, and minimum gap between counted rep ends is 0.8 seconds. The knee excursion threshold is adjustable independently from the ROM range so a clinician can intentionally prescribe a smaller movement without making incidental jitter count.
 
 ---
 
