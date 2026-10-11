@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
+import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 
 type Point = { x: number; y: number; z: number; visibility?: number };
 type Rep = {
@@ -20,6 +21,7 @@ type RepSample = {
   primaryKnee: number;
   trunkLean: number | null;
 };
+type AngleHistoryPoint = { seconds: number; leftKnee: number | null; rightKnee: number | null };
 type DetectorLog = {
   time: string;
   event: 'started' | 'counted' | 'rejected';
@@ -83,6 +85,7 @@ export default function LiveSession() {
   const excursionThresholdRef = useRef(12);
   const lastFrameTimeRef = useRef(-1);
   const lastUiUpdateRef = useRef(0);
+  const sessionStartTimeRef = useRef<number | null>(null);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -98,6 +101,8 @@ export default function LiveSession() {
   const [minRepMovement, setMinRepMovement] = useState('20');
   const [reps, setReps] = useState<Rep[]>([]);
   const [detectorLogs, setDetectorLogs] = useState<DetectorLog[]>([]);
+  const [angleHistory, setAngleHistory] = useState<AngleHistoryPoint[]>([]);
+  const [repMarkers, setRepMarkers] = useState<number[]>([]);
 
   const logDetector = useCallback((entry: DetectorLog) => {
     console.info('[Kinexa rep detector]', entry);
@@ -158,6 +163,7 @@ export default function LiveSession() {
       }
       phaseRef.current = 'ready'; baselineRef.current = null; lowRef.current = null; startAngleRef.current = null;
       startTimeRef.current = null; lastRepEndTimeRef.current = null; repSamplesRef.current = []; smoothedAngleRef.current = null; lastFrameTimeRef.current = -1;
+      sessionStartTimeRef.current = performance.now(); lastUiUpdateRef.current = 0; setAngleHistory([]); setRepMarkers([]);
       setRunning(true); setPhase('Hold a comfortable starting position');
       const loop = () => {
         const v = videoRef.current; const canvas = canvasRef.current; const detector = landmarkerRef.current;
@@ -193,6 +199,10 @@ export default function LiveSession() {
                 setAngleNow(Math.round(smoothed));
                 setTrunkNow(currentTrunkLean);
                 setAsymmetryNow(left !== null && right !== null ? Math.abs(left - right) : null);
+                if (sessionStartTimeRef.current !== null) {
+                  const point = { seconds: (now - sessionStartTimeRef.current) / 1000, leftKnee: left, rightKnee: right };
+                  setAngleHistory((history) => [...history.filter((item) => item.seconds >= point.seconds - 30), point]);
+                }
                 lastUiUpdateRef.current = now;
               }
               const sample: RepSample = {
@@ -259,6 +269,10 @@ export default function LiveSession() {
                   });
                   if (event === 'counted') {
                     lastRepEndTimeRef.current = now / 1000;
+                    if (sessionStartTimeRef.current !== null) {
+                      const repMarker = (now - sessionStartTimeRef.current) / 1000;
+                      setRepMarkers((markers) => [...markers.filter((time) => time >= repMarker - 30), repMarker]);
+                    }
                     const samples = repSamplesRef.current;
                     const deepest = samples.reduce((lowest, current) => current.primaryKnee < lowest.primaryKnee ? current : lowest, sample);
                     const asymmetry = deepest.leftKnee !== null && deepest.rightKnee !== null ? Math.abs(deepest.leftKnee - deepest.rightKnee) : null;
@@ -325,6 +339,19 @@ export default function LiveSession() {
             <div><span className="micro-label">TRUNK LEAN</span><b>{trunkNow === null ? '—' : `${trunkNow}°`}</b></div>
             <div><span className="micro-label">ASYMMETRY</span><b>{asymmetryNow === null ? '—' : `${asymmetryNow}°`}</b></div>
           </div>
+          <section className="angle-chart-panel" aria-label="Knee angle over time">
+            <div className="angle-chart-header"><span className="micro-label">KNEE ANGLE · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Left</span><span><i className="legend-right"/>Right</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
+            {angleHistory.length > 1 ? <div className="angle-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={angleHistory} margin={{ top: 8, right: 8, bottom: 0, left: -16 }}>
+              <CartesianGrid stroke="#e8ece7" strokeDasharray="3 4" vertical={false}/>
+              <XAxis dataKey="seconds" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => `${value.toFixed(0)}s`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={{ stroke: '#e3e8e2' }} minTickGap={24}/>
+              <YAxis type="number" domain={[30, 180]} ticks={[60, 90, 120, 150, 180]} tickFormatter={(value: number) => `${value}°`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={false} width={38}/>
+              <Tooltip labelFormatter={(value: number) => `${Number(value).toFixed(1)} seconds`} formatter={(value: number, name: string) => [`${value}°`, name === 'leftKnee' ? 'Left knee' : 'Right knee']} contentStyle={{ border: '1px solid #e3e8e2', borderRadius: 2, fontSize: 10 }}/>
+              {minAngle !== '' && maxAngle !== '' && <ReferenceArea y1={Number(minAngle)} y2={Number(maxAngle)} fill="#79d69d" fillOpacity={0.16} strokeOpacity={0}/>}
+              {repMarkers.map((time, index) => <ReferenceLine key={`rep-${index}-${time.toFixed(2)}`} x={time} stroke="#81918a" strokeDasharray="3 4" strokeWidth={1}/>) }
+              <Line type="monotone" dataKey="leftKnee" name="Left knee" stroke="#167c69" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
+              <Line type="monotone" dataKey="rightKnee" name="Right knee" stroke="#d69b35" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
+            </LineChart></ResponsiveContainer></div> : <p className="angle-chart-empty">Start the camera to see both knee angles move through the session.</p>}
+          </section>
           <div className="rom-panel">
             <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div>
             <p className="rom-copy">Set the prescribed knee angle range at the bottom of each rep. Optional limits can assess trunk lean and knee asymmetry. Only the limits entered here are evaluated.</p>
