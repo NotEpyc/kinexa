@@ -2,6 +2,12 @@
 
 An AI-powered platform where physiotherapists define patient-specific exercise limits, patients upload exercise videos, and the system returns per-rep form assessments with explanations — combining pose estimation, ML quality scoring, and therapist-defined ROM rules.
 
+## Current Prototype: Live Squat Feedback
+
+The frontend now supports a browser-camera live squat session using MediaPipe Pose Landmarker. It estimates knee angle on each camera frame, detects completed squat repetitions, and compares bottom-of-rep knee angle with a therapist-entered range. The existing `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`, so the backend is not required for browser-side pose tracking. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend and open `http://localhost:3000`.
+
+The ROM inputs are currently session-local and are not saved to patient plans. This is a rules-based prototype, not a trained form-quality ML model or a medical device. Camera angle, visibility, and the fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative.
+
 ## Architecture
 
 ```
@@ -42,23 +48,27 @@ kinexa/
 └── AGENTS.md          # Agent instructions
 ```
 
+This is a polyglot monorepo: the root npm workspace manages the Next.js frontend, while the FastAPI backend keeps its Python dependencies in `backend/requirements.txt`.
+
 ## Quick Start
 
-### Backend
+Install and run from the repository root:
+
 ```bash
-cd backend
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-pip install -r requirements.txt
-uvicorn app.main:app --reload
+npm install
+npm run dev                 # Next.js frontend
+npm run backend:dev         # FastAPI backend (separate terminal)
 ```
 
-### Frontend
+Install Python dependencies once before starting FastAPI:
+
 ```bash
-cd frontend
-npm install
-npm run dev
+python -m venv .venv
+# Activate .venv, then:
+npm run backend:install
 ```
+
+The browser live-feedback prototype works with the frontend and pose bundle; start the backend as well when using backend API features. For production frontend checks use `npm run build` from the repository root.
 
 ### MediaPipe Test
 ```bash
@@ -78,6 +88,8 @@ python -c "import mediapipe as mp; from mediapipe.tasks import python; from medi
 | F | Frontend: dashboard, patients, plan editor, upload, results |
 | G | Database: PostgreSQL, auth, history, progress |
 | H | Validation: unseen people, camera angles, physiotherapist comparison |
+
+The phase table above describes the original upload/ML roadmap; live camera feedback is now being built as the primary interaction.
 
 ## Key Design Principles
 

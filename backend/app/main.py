@@ -1,7 +1,10 @@
 """Kinexa FastAPI Application Entry Point."""
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.routes import analyze, patients, plans, health
 
@@ -19,6 +22,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# The browser live-session client loads the same pose bundle used by the API.
+model_dir = Path(__file__).resolve().parents[1] / "models"
+if model_dir.is_dir():
+    app.mount("/api/models", StaticFiles(directory=model_dir), name="models")
 
 # Routers
 app.include_router(health.router, prefix="/api", tags=["health"])
