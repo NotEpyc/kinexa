@@ -14,7 +14,21 @@ python -m ml.training.train_exercise ..\data\features\rehab246_squat.csv --exerc
 
 The official REHAB24-6 dataset is restricted to academic/nonprofit, non-commercial research and must be cited. Its motion-capture skeletons are not MediaPipe estimates: the resulting grouped metrics measure performance on source skeletons and do not establish accuracy on live camera input. Validate the runtime pose-to-feature path on subject-labelled MediaPipe recordings before presenting live model outputs as reliable.
 
-The local squat run produced 191 reps from 9 participants (130 correct, 61 incorrect). Five-fold subject-grouped evaluation scored RF macro-F1 0.672 (95% subject-bootstrap interval 0.554–0.746) and XGBoost 0.717 (0.634–0.793); majority-class baseline macro-F1 was 0.405. These results are preliminary and uncertain because only nine participant groups are available. Experimental artifacts are under `models/experiments/rehab246-squat-skeleton/`; they are not camera-validated and are not wired into live feedback. The local `data/raw/rehab24-6/` contains the 3D joint archive and annotations, but not the source record's `videos.zip`, so a MediaPipe-on-RGB evaluation still requires that file.
+The local squat run produced 191 reps from 9 participants (130 correct, 61 incorrect). Five-fold subject-grouped evaluation scored RF macro-F1 0.672 (95% subject-bootstrap interval 0.554–0.746) and XGBoost 0.717 (0.634–0.793); majority-class baseline macro-F1 was 0.405. These results are preliminary and uncertain because only nine participant groups are available. Experimental artifacts are under `models/experiments/rehab246-squat-skeleton/`; they are not camera-validated and are not wired into live feedback. The local `data/raw/rehab24-6/` now includes RGB squat videos, documented below.
+
+### Squat RGB / MediaPipe experiment and view limitation
+
+`prepare_rehab246_mediapipe_squat.py` runs the live MediaPipe pose and FR-5 feature pipeline over the annotated REHAB24-6 squat video segments. It preserves person, rep, camera, and source orientation; reps with less than 80% required-landmark coverage are excluded. Extracted features are saved locally under `data/features/` and experimental models under `models/experiments/` (both ignored by Git).
+
+```powershell
+cd backend
+python -m ml.datasets.prepare_rehab246_mediapipe_squat --cameras Camera17 Camera18
+python -m ml.training.train_exercise ..\data\features\rehab246_squat_mediapipe.csv --exercise squat --task classification --target label --group subject_id --models rf xgb --folds 5 --output-dir ..\models\experiments\rehab246-squat-mediapipe
+```
+
+The current extraction retained 292 rep-camera rows from 9 people: 191 from Camera17 and 101 from Camera18; 90 of 382 possible rep-camera rows were excluded for insufficient pose coverage. On the pooled rows, RF macro-F1 was 0.632 (participant-bootstrap 95% interval 0.525–0.713). Camera-specific RF macro-F1 was 0.580 on Camera17 and 0.569 on Camera18. In a cross-camera check that held participants out, training on Camera17 and evaluating Camera18 gave 0.563 macro-F1 (101 reps); reversing the cameras gave 0.638 (191 reps). This is modest and directional performance, not proof of reliable live assessment.
+
+**This does not yet validate the product's preferred side view.** REHAB24-6 labels the squat participant's orientation relative to Camera17 as `front` or `half-profile`; it has no clean `profile` squat recordings in this local subset, and Camera18 is a second synchronized camera rather than a side-view label. The Mendeley `side` examples are labeled per whole video, not per rep, so their labels must not be copied onto individual reps. To validate side-view live per-rep feedback, collect or obtain side-view squat videos with therapist-reviewed per-rep labels, run them through the same MediaPipe feature pipeline, and hold out participants for evaluation. Keep the current models advisory and do not wire these experimental artifacts into the live per-rep endpoint.
 
 ### Live-camera readiness gate
 
