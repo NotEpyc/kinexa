@@ -15,7 +15,7 @@ type Rep = {
   duration: number;
   verdict: 'within range' | 'outside range' | 'range not set' | 'not assessable';
   cue: string;
-  model: { status: 'checking' | 'available' | 'unavailable'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
+  model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
 type RepSample = {
   time: number;
@@ -53,6 +53,27 @@ type DetectorLog = {
 
 const EXERCISE = getLiveExercise('squat');
 const DETECTOR = EXERCISE.detector;
+type KneeAngleConvention = 'joint_angle' | 'flexion';
+
+function toKinexaKneeRange(minimum: number, maximum: number, convention: KneeAngleConvention) {
+  return convention === 'flexion'
+    ? { min: 180 - maximum, max: 180 - minimum }
+    : { min: minimum, max: maximum };
+}
+
+function describeModelAssessment(model: Rep['model']) {
+  if (model.status === 'checking') return 'Checking general-form model…';
+  if (model.status === 'skipped') return model.reason ?? 'Model skipped for this rep.';
+  if (model.status === 'unavailable') return `Model advisory unavailable: ${model.reason ?? 'insufficient visible data'}`;
+  const prediction = model.task === 'regression'
+    ? `predicted score ${model.prediction}`
+    : model.prediction === 'incorrect'
+      ? 'possible general-form concern'
+      : model.prediction === 'correct'
+        ? 'no general-form concern'
+        : `prediction ${model.prediction ?? 'unavailable'}`;
+  return `Research model advisory: ${prediction}${model.confidence === undefined ? '' : ` · ${(model.confidence * 100).toFixed(0)}% confidence`} · not clinically validated.`;
+}
 
 const CONNECTIONS: Array<[number, number]> = [
   [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24],
@@ -182,6 +203,7 @@ export default function LiveSession() {
   const [tracking, setTracking] = useState('Waiting for camera');
   const [minAngle, setMinAngle] = useState('');
   const [maxAngle, setMaxAngle] = useState('');
+  const [kneeAngleConvention, setKneeAngleConvention] = useState<KneeAngleConvention>('joint_angle');
   const [maxTrunkAngle, setMaxTrunkAngle] = useState('');
   const [maxAsymmetry, setMaxAsymmetry] = useState('');
   const [minRepMovement, setMinRepMovement] = useState(String(DETECTOR.minRepMovementDegrees));
@@ -246,11 +268,13 @@ export default function LiveSession() {
     try {
       const min = minAngle === '' ? null : Number(minAngle);
       const max = maxAngle === '' ? null : Number(maxAngle);
+      const minimumAllowed = kneeAngleConvention === 'flexion' ? 0 : 30;
+      const maximumAllowed = kneeAngleConvention === 'flexion' ? 150 : 180;
       if ((min === null) !== (max === null)) {
         throw new Error('Enter both minimum and maximum knee angles, or leave both blank.');
       }
-      if ((min !== null && (!Number.isFinite(min) || min < 30 || min > 180)) || (max !== null && (!Number.isFinite(max) || max < 30 || max > 180)) || (min !== null && max !== null && min > max)) {
-        throw new Error('Enter a valid knee angle range between 30° and 180°, with minimum no greater than maximum.');
+      if ((min !== null && (!Number.isFinite(min) || min < minimumAllowed || min > maximumAllowed)) || (max !== null && (!Number.isFinite(max) || max < minimumAllowed || max > maximumAllowed)) || (min !== null && max !== null && min > max)) {
+        throw new Error(`Enter a valid ${kneeAngleConvention === 'flexion' ? 'flexion' : 'knee joint angle'} range between ${minimumAllowed}° and ${maximumAllowed}°, with minimum no greater than maximum.`);
       }
       for (const [label, raw, upper] of [['maximum trunk lean', maxTrunkAngle, 90], ['maximum knee asymmetry', maxAsymmetry, 90]] as const) {
         if (raw !== '' && (!Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > upper)) {
@@ -454,7 +478,10 @@ export default function LiveSession() {
                     const asymmetry = deepest.leftKnee !== null && deepest.rightKnee !== null ? Math.abs(deepest.leftKnee - deepest.rightKnee) : null;
                     const peakTrunkLean = samples.reduce((peak, current) => current.trunkLean === null ? peak : Math.max(peak ?? 0, current.trunkLean), null as number | null);
                     const kneeConfigured = minAngle !== '' && maxAngle !== '';
-                    const kneeOutside = kneeConfigured && (bottom < Number(minAngle) || bottom > Number(maxAngle));
+                    const prescribedKneeRange = kneeConfigured
+                      ? toKinexaKneeRange(Number(minAngle), Number(maxAngle), kneeAngleConvention)
+                      : null;
+                    const kneeOutside = prescribedKneeRange !== null && (bottom < prescribedKneeRange.min || bottom > prescribedKneeRange.max);
                     const trunkOutside = maxTrunkAngle !== '' && peakTrunkLean !== null && peakTrunkLean > Number(maxTrunkAngle);
                     const asymmetryOutside = maxAsymmetry !== '' && asymmetry !== null && asymmetry > Number(maxAsymmetry);
                     const configuredMetricMissing = (maxTrunkAngle !== '' && peakTrunkLean === null) || (maxAsymmetry !== '' && asymmetry === null);
@@ -467,7 +494,7 @@ export default function LiveSession() {
                           ? 'within range'
                           : 'range not set';
                     const cues: string[] = [];
-                    if (kneeOutside) cues.push(bottom < Number(minAngle) ? 'You moved beyond the prescribed depth; reduce squat depth.' : 'Reach the prescribed depth, if comfortable.');
+                    if (kneeOutside) cues.push(bottom < (prescribedKneeRange?.min ?? 0) ? 'You moved beyond the prescribed depth; reduce squat depth.' : 'Reach the prescribed depth, if comfortable.');
                     else if (kneeConfigured) cues.push('Knee depth is within the prescribed range.');
                     if (trunkOutside) cues.push(`Trunk lean reached ${peakTrunkLean}°, above the therapist-set ${maxTrunkAngle}° limit.`);
                     else if (maxTrunkAngle !== '' && peakTrunkLean === null) cues.push('Trunk lean could not be assessed because shoulder or hip landmarks were not visible enough.');
@@ -480,7 +507,13 @@ export default function LiveSession() {
                       number, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration,
                       verdict, cue: cues.join(' '), model: { status: 'checking' },
                     }]);
-                    void requestExerciseModel(EXERCISE.id, modelFeatures).then((model) => {
+                    const modelAssessment = kneeConfigured
+                      ? Promise.resolve({
+                          status: 'skipped' as const,
+                          reason: 'Generic model paused: it is not conditioned on this patient’s knee ROM. The prescribed ROM check above is used for depth.',
+                        })
+                      : requestExerciseModel(EXERCISE.id, modelFeatures);
+                    void modelAssessment.then((model) => {
                       setReps((old) => old.map((rep) => rep.number === number ? { ...rep, model } : rep));
                     });
                   } else setPhase('Rep not counted · see detector log');
@@ -504,6 +537,9 @@ export default function LiveSession() {
   };
 
   const latest = reps.at(-1);
+  const prescribedKneeRange = minAngle !== '' && maxAngle !== ''
+    ? toKinexaKneeRange(Number(minAngle), Number(maxAngle), kneeAngleConvention)
+    : null;
   return (
     <main className="app-shell">
       <header className="topbar"><a className="brand" href="#">KINEXA<span>MOVE BETTER, WITH GUIDANCE</span></a><div className="live-indicator"><i className={running ? 'pulse on' : 'pulse'} />{running ? 'LIVE SESSION' : 'SESSION READY'}</div></header>
@@ -531,7 +567,7 @@ export default function LiveSession() {
               <XAxis dataKey="seconds" type="number" domain={["dataMin", "dataMax"]} tickFormatter={(value: number) => `${value.toFixed(0)}s`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={{ stroke: '#e3e8e2' }} minTickGap={24}/>
               <YAxis type="number" domain={[30, 180]} ticks={[60, 90, 120, 150, 180]} tickFormatter={(value: number) => `${value}°`} tick={{ fill: '#87928d', fontSize: 9 }} tickLine={false} axisLine={false} width={42}/>
               <Tooltip labelFormatter={(value: number) => `${Number(value).toFixed(1)} seconds`} formatter={(value: number, name: string) => [`${value}°`, name]} contentStyle={{ border: '1px solid #e3e8e2', borderRadius: 2, fontSize: 10 }}/>
-              {minAngle !== '' && maxAngle !== '' && <ReferenceArea y1={Number(minAngle)} y2={Number(maxAngle)} fill="#79d69d" fillOpacity={0.16} strokeOpacity={0}/>}
+              {prescribedKneeRange && <ReferenceArea y1={prescribedKneeRange.min} y2={prescribedKneeRange.max} fill="#79d69d" fillOpacity={0.16} strokeOpacity={0}/>}
               {repMarkers.map((time, index) => <ReferenceLine key={`rep-${index}-${time.toFixed(2)}`} x={time} stroke="#81918a" strokeDasharray="3 4" strokeWidth={1}/>) }
               <Line type="monotone" dataKey="leftKnee" name="Your left knee" stroke="#167c69" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
               <Line type="monotone" dataKey="rightKnee" name="Your right knee" stroke="#d69b35" strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false}/>
@@ -539,17 +575,18 @@ export default function LiveSession() {
           </section>
           <div className="rom-panel">
             <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div>
-            <p className="rom-copy">Set the prescribed knee angle range at the bottom of each rep. Optional limits can assess trunk lean and knee asymmetry. Only the limits entered here are evaluated.</p>
+            <p className="rom-copy">Set the therapist-prescribed knee range at the bottom of each rep. Kinexa uses an inside knee angle: 180° is straight, and smaller angles mean more bend. Flexion-from-straight values are converted automatically. Limits stay local to this browser.</p>
             <div className="range-inputs">
-              <label>Minimum knee angle <span><input type="number" min="30" max="180" placeholder="e.g. 80" value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
-              <label>Maximum knee angle <span><input type="number" min="30" max="180" placeholder="e.g. 110" value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
+              <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => setKneeAngleConvention(e.target.value as KneeAngleConvention)}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
+              <label>Minimum allowed angle at bottom <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
+              <label>Maximum allowed angle at bottom <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 75' : 'e.g. 130'} value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
               <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => setMaxTrunkAngle(e.target.value)}/>°</span></label>
               <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => setMaxAsymmetry(e.target.value)}/>°</span></label>
               <label>Minimum knee movement <span><input type="number" min={DETECTOR.minimumUserMovementDegrees} max={DETECTOR.maximumUserMovementDegrees} value={minRepMovement} disabled={running} onChange={(e) => setMinRepMovement(e.target.value)}/>°</span></label>
             </div>
-            <p className="local-hint">Minimum knee movement (default 20°) is a rep-detection threshold, separate from prescribed ROM. These settings stay in this browser for now; patient plans are not connected yet.</p>
+            <p className="local-hint">If the prescription says flexion from straight, choose that format; for example, 50°–75° flexion becomes a 105°–130° inside-angle range. Minimum knee movement (default 20°) is separate from ROM. Patient plans are not connected yet.</p>
           </div>
-          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{latest.model.status === 'checking' ? 'Checking general-form model…' : latest.model.status === 'available' ? `Research model advisory: ${latest.model.task === 'regression' ? `predicted score ${latest.model.prediction}` : latest.model.prediction === 'incorrect' ? 'possible form concern' : latest.model.prediction === 'correct' ? 'no general form concern' : `prediction ${latest.model.prediction ?? 'unavailable'}`}${latest.model.confidence === undefined ? '' : ` · ${(latest.model.confidence * 100).toFixed(0)}% confidence`} · therapist ROM rules take precedence; camera validation pending.` : `Model advisory unavailable: ${latest.model.reason ?? 'insufficient visible data'}`}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
+          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{describeModelAssessment(latest.model)}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
             <p>Each event shows knee travel on both sides, bottom-position angle difference, visibility, duration, and spacing. A rep needs at least {DETECTOR.minimumBilateralMovementDegrees}° travel in each knee and no more than {DETECTOR.maximumCountedKneeAsymmetryDegrees}° difference at the bottom. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
