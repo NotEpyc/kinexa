@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getLiveExercise } from '@/lib/exercises';
+import { getLiveExercise, LIVE_EXERCISES } from '@/lib/exercises';
 import type { ExerciseReadiness } from '@/lib/exercises';
-import type { SquatSample } from '@/lib/exercises/squat-strategy';
+import type { KneeAngleSample } from '@/lib/exercises/bilateral-knee-strategy';
 
 type Point = { x: number; y: number; z: number; visibility?: number };
 type Rep = {
   number: number;
   angle: number;
+  primaryLabel: string;
   asymmetry: number | null;
   maxTrunkLean: number | null;
   duration: number;
@@ -18,7 +19,7 @@ type Rep = {
   cue: string;
   model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
-type RepSample = SquatSample;
+type RepSample = KneeAngleSample;
 type AngleHistoryPoint = { seconds: number; leftKnee: number | null; rightKnee: number | null };
 type DetectorLog = {
   time: string;
@@ -44,8 +45,6 @@ type DetectorLog = {
   reason?: string;
 };
 
-const EXERCISE = getLiveExercise('squat');
-const DETECTOR = EXERCISE.detector;
 type KneeAngleConvention = 'joint_angle' | 'flexion';
 
 function toKinexaKneeRange(minimum: number, maximum: number, convention: KneeAngleConvention) {
@@ -98,6 +97,9 @@ async function requestExerciseModel(exercise: string, features: Record<string, n
 }
 
 export default function LiveSession() {
+  const [exerciseId, setExerciseId] = useState('squat');
+  const EXERCISE = getLiveExercise(exerciseId);
+  const DETECTOR = EXERCISE.detector;
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
@@ -149,9 +151,12 @@ export default function LiveSession() {
       .then((result) => {
         if (cancelled) return;
         const exercise = result.exercises?.find((item: { exercise?: string }) => item.exercise === EXERCISE.id);
-        if (exercise?.readiness) setReadiness(exercise.readiness as ExerciseReadiness);
-        if (exercise?.readiness_reason) setReadinessReason(exercise.readiness_reason as string);
-        else if (!exercise) {
+        if (EXERCISE.readiness === 'rules_only') {
+          setReadiness('rules_only');
+          setReadinessReason(EXERCISE.readinessMessage);
+        } else if (exercise?.readiness) setReadiness(exercise.readiness as ExerciseReadiness);
+        if (EXERCISE.readiness !== 'rules_only' && exercise?.readiness_reason) setReadinessReason(exercise.readiness_reason as string);
+        else if (!exercise && EXERCISE.readiness !== 'rules_only') {
           setReadiness('rules_only');
           setReadinessReason('No quality model is registered for this exercise; current checks are rules-based.');
         }
@@ -159,10 +164,29 @@ export default function LiveSession() {
       .catch((error: unknown) => {
         if (cancelled) return;
         setReadiness('rules_only');
-        setReadinessReason(error instanceof Error ? error.message : 'Quality model service is unavailable.');
+        if (EXERCISE.readiness !== 'rules_only') setReadinessReason(error instanceof Error ? error.message : 'Quality model service is unavailable.');
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [exerciseId, EXERCISE.id]);
+
+  useEffect(() => {
+    setReps([]);
+    setDetectorLogs([]);
+    setAngleHistory([]);
+    setRepMarkers([]);
+    setAngleNow(null);
+    setTrunkNow(null);
+    setAsymmetryNow(null);
+    setPhase('Hold a comfortable starting position');
+    setReadiness(EXERCISE.readiness);
+    setReadinessReason(EXERCISE.readinessMessage);
+    setMinAngle('');
+    setMaxAngle('');
+    setMaxTrunkAngle('');
+    setMaxAsymmetry('');
+    setMinRepMovement(String(getLiveExercise(exerciseId).detector.minRepMovementDegrees));
+    repNumberRef.current = 0;
+  }, [exerciseId, EXERCISE.readiness, EXERCISE.readinessMessage]);
 
   const logDetector = useCallback((entry: DetectorLog) => {
     console.info('[Kinexa rep detector]', entry);
@@ -387,13 +411,15 @@ export default function LiveSession() {
                     const number = ++repNumberRef.current;
                     const modelFeatures = assessment.modelFeatures;
                     setReps((old) => [...old, {
-                      number, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration,
+                      number, angle: Math.round(bottom), primaryLabel: assessment.primaryMetric.label, asymmetry, maxTrunkLean: peakTrunkLean, duration,
                       verdict, cue: cues.join(' '), model: { status: 'checking' },
                     }]);
-                    const modelAssessment = kneeConfigured
+                    const modelAssessment = kneeConfigured || EXERCISE.readiness === 'rules_only'
                       ? Promise.resolve({
                           status: 'skipped' as const,
-                          reason: 'Generic model paused: it is not conditioned on this patient’s knee ROM. The prescribed ROM check above is used for depth.',
+                          reason: EXERCISE.readiness === 'rules_only'
+                            ? 'No quality model is trained for this exercise; feedback comes from its movement strategy and prescribed ROM.'
+                            : 'Generic model paused: it is not conditioned on this patient’s knee ROM. The prescribed ROM check above is used for depth.',
                         })
                       : requestExerciseModel(EXERCISE.id, modelFeatures);
                     void modelAssessment.then((model) => {
@@ -426,11 +452,11 @@ export default function LiveSession() {
   return (
     <main className="app-shell">
       <header className="topbar"><a className="brand" href="#">KINEXA<span>MOVE BETTER, WITH GUIDANCE</span></a><div className="live-indicator"><i className={running ? 'pulse on' : 'pulse'} />{running ? 'LIVE SESSION' : 'SESSION READY'}</div></header>
-      <section className="intro"><div><p className="eyebrow">REHABILITATION · {EXERCISE.label.toUpperCase()} PRACTICE</p><h1>Your movement,<br/><em>in the moment.</em></h1><p className="lede">Real-time pose guidance with a range set for your recovery.</p></div><div className="session-meta"><span>01 / LIVE COACH</span><span>Side view recommended</span><span>{readiness === 'camera_validated' ? 'CAMERA VALIDATED' : readiness === 'model_advisory' ? 'MODEL ADVISORY' : 'RULES ONLY'}</span><small>{readinessReason}</small></div></section>
+      <section className="intro"><div><p className="eyebrow">REHABILITATION · {EXERCISE.label.toUpperCase()} PRACTICE</p><h1>Your movement,<br/><em>in the moment.</em></h1><p className="lede">Real-time pose guidance with a range set for your recovery.</p><label className="exercise-picker">EXERCISE<select value={exerciseId} disabled={running || loading} onChange={(event) => setExerciseId(event.target.value)}>{Object.values(LIVE_EXERCISES).map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label></div><div className="session-meta"><span>01 / LIVE COACH</span><span>{EXERCISE.cameraGuidance}</span><span>{readiness === 'camera_validated' ? 'CAMERA VALIDATED' : readiness === 'model_advisory' ? 'MODEL ADVISORY' : 'RULES ONLY'}</span><small>{readinessReason}</small></div></section>
       <section className="workspace">
         <div className="camera-column">
-          <div className="camera-frame"><video ref={videoRef} muted playsInline/><canvas ref={canvasRef} className="pose-canvas"/>{!running && <div className="camera-placeholder"><div className="camera-mark">◎</div><b>Set up your camera</b><span>Position the camera at hip height, far enough away to show your full body.</span></div>}<div className="camera-badge"><i className={running ? 'pulse on' : 'pulse'}/>{running ? tracking : 'CAMERA PREVIEW'}</div>{angleNow !== null && <div className="angle-overlay"><span>KNEE ANGLE</span><b>{angleNow}°</b></div>}</div>
-          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>Side-on · Full body in frame</b></div><button className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button></div>
+          <div className="camera-frame"><video ref={videoRef} muted playsInline/><canvas ref={canvasRef} className="pose-canvas"/>{!running && <div className="camera-placeholder"><div className="camera-mark">◎</div><b>Set up your camera</b><span>Position the camera at hip height, far enough away to show your full body.</span></div>}<div className="camera-badge"><i className={running ? 'pulse on' : 'pulse'}/>{running ? tracking : 'CAMERA PREVIEW'}</div>{angleNow !== null && <div className="angle-overlay"><span>{EXERCISE.angleLabel.toUpperCase()}</span><b>{angleNow}°</b></div>}</div>
+          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>{EXERCISE.cameraGuidance}</b></div><button className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button></div>
           {error && <p className="error-banner" role="alert">{error}</p>}
           <div className="safety-note"><span>i</span><p>Keep a stable chair or support nearby. Stop if you feel pain, dizziness, or unusual discomfort.</p></div>
         </div>
@@ -438,12 +464,12 @@ export default function LiveSession() {
           <div className="panel-heading"><div><p className="eyebrow">YOUR SESSION</p><h2>Live coach</h2></div><span className="rep-count"><b>{reps.length.toString().padStart(2, '0')}</b><small>REPS</small></span></div>
           <div className="phase-card"><span className="micro-label">MOVEMENT CUE</span><strong>{running ? phase : 'Ready when you are'}</strong><p>{latest?.cue ?? (running ? 'Move at a comfortable pace. Feedback appears after each completed rep.' : 'Start the camera to see your pose and movement cues.')}</p></div>
           <div className="metric-row">
-            <div><span className="micro-label">KNEE ANGLE</span><b>{angleNow === null ? '—' : `${angleNow}°`}</b></div>
+            <div><span className="micro-label">{EXERCISE.angleLabel.toUpperCase()}</span><b>{angleNow === null ? '—' : `${angleNow}°`}</b></div>
             <div><span className="micro-label">TRUNK LEAN</span><b>{trunkNow === null ? '—' : `${trunkNow}°`}</b></div>
             <div><span className="micro-label">ASYMMETRY</span><b>{asymmetryNow === null ? '—' : `${asymmetryNow}°`}</b></div>
           </div>
-          <section className="angle-chart-panel" aria-label="Knee angle over time">
-            <div className="angle-chart-header"><span className="micro-label">KNEE ANGLE · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Your left knee</span><span><i className="legend-right"/>Your right knee</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
+          <section className="angle-chart-panel" aria-label={`${EXERCISE.angleLabel} over time`}>
+            <div className="angle-chart-header"><span className="micro-label">{EXERCISE.angleLabel.toUpperCase()} · LAST 30 SECONDS</span><div className="angle-chart-legend"><span><i className="legend-left"/>Your left knee</span><span><i className="legend-right"/>Your right knee</span>{minAngle !== '' && maxAngle !== '' && <span><i className="legend-range"/>Prescribed range</span>}<span><i className="legend-rep"/>Counted rep</span></div></div>
             <p className="angle-chart-note">Left and right refer to your body; the camera preview is mirrored. A knee trace is omitted when its hip, knee, or ankle is not clearly visible.</p>
             {angleHistory.length > 1 ? <div className="angle-chart"><ResponsiveContainer width="100%" height="100%"><LineChart data={angleHistory} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid stroke="#e8ece7" strokeDasharray="3 4" vertical={false}/>
@@ -458,22 +484,22 @@ export default function LiveSession() {
           </section>
           <div className="rom-panel">
             <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div>
-            <p className="rom-copy">Set the therapist-prescribed knee range at the bottom of each rep. Kinexa uses an inside knee angle: 180° is straight, and smaller angles mean more bend. Flexion-from-straight values are converted automatically. Limits stay local to this browser.</p>
+            <p className="rom-copy">Set the therapist-prescribed knee range {EXERCISE.targetPositionLabel}. Kinexa uses an inside knee angle: 180° is straight, and smaller angles mean more bend. Flexion-from-straight values are converted automatically. Limits stay local to this browser.</p>
             <div className="range-inputs">
               <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => setKneeAngleConvention(e.target.value as KneeAngleConvention)}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
-              <label>Minimum allowed angle at bottom <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
-              <label>Maximum allowed angle at bottom <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 75' : 'e.g. 130'} value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
+              <label>Minimum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
+              <label>Maximum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 75' : 'e.g. 130'} value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
               <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => setMaxTrunkAngle(e.target.value)}/>°</span></label>
               <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => setMaxAsymmetry(e.target.value)}/>°</span></label>
               <label>Minimum knee movement <span><input type="number" min={DETECTOR.minimumUserMovementDegrees} max={DETECTOR.maximumUserMovementDegrees} value={minRepMovement} disabled={running} onChange={(e) => setMinRepMovement(e.target.value)}/>°</span></label>
             </div>
-            <p className="local-hint">If the prescription says flexion from straight, choose that format; for example, 50°–75° flexion becomes a 105°–130° inside-angle range. Minimum knee movement (default 20°) is separate from ROM. Patient plans are not connected yet.</p>
+            <p className="local-hint">If the prescription says flexion from straight, choose that format; for example, 50°–75° flexion becomes a 105°–130° inside-angle range. Minimum movement (default {DETECTOR.minRepMovementDegrees}°) is separate from ROM. Patient plans are not connected yet.</p>
           </div>
-          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>Bottom knee · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{describeModelAssessment(latest.model)}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
+          <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>{latest.primaryLabel} · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{describeModelAssessment(latest.model)}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">
             <summary>Rep detector log · {detectorLogs.length} recent events</summary>
-            <p>Each event shows knee travel on both sides, bottom-position angle difference, visibility, duration, and spacing. A rep needs at least {DETECTOR.minimumBilateralMovementDegrees}° travel in each knee and no more than {DETECTOR.maximumCountedKneeAsymmetryDegrees}° difference at the bottom. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
-            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · top {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · bottom difference {entry.bottomAsymmetry === null ? '—' : `${entry.bottomAsymmetry}°`} / {DETECTOR.maximumCountedKneeAsymmetryDegrees}° maximum · visible L/R {entry.leftVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} · {entry.rightVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} frames · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / {Math.round(DETECTOR.minimumBilateralTravelRatio * 100)}% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
+            <p>Each event shows knee travel on both sides, target-position angle difference, visibility, duration, and spacing. A rep needs at least {DETECTOR.minimumBilateralMovementDegrees}° travel in each knee and no more than {DETECTOR.maximumCountedKneeAsymmetryDegrees}° difference at the target. The same structured entries are written to the browser console as <code>[Kinexa rep detector]</code>.</p>
+            {detectorLogs.length ? <ol>{[...detectorLogs].reverse().map((entry, index) => <li key={`${entry.time}-${entry.event}-${index}`}><b>{entry.event.toUpperCase()}</b><span>{entry.time} · angle {entry.angle}° · start {entry.baseline}°{entry.bottom === null ? '' : ` · bottom ${entry.bottom}°`} · travel {entry.excursion}° / {entry.minMovement}° minimum · left {entry.leftExcursion === null ? '—' : `${entry.leftExcursion}°`} · right {entry.rightExcursion === null ? '—' : `${entry.rightExcursion}°`} / {entry.minBilateralMovement}° each minimum · target difference {entry.bottomAsymmetry === null ? '—' : `${entry.bottomAsymmetry}°`} / {DETECTOR.maximumCountedKneeAsymmetryDegrees}° maximum · visible L/R {entry.leftVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} · {entry.rightVisibleFrames ?? '—'}/{entry.repFrames ?? '—'} frames · balance {entry.bilateralRatio === null ? '—' : `${Math.round(entry.bilateralRatio * 100)}%`} / {Math.round(DETECTOR.minimumBilateralTravelRatio * 100)}% minimum · duration {entry.duration}s / {entry.minDuration}s minimum{entry.gap === null ? '' : ` · gap ${entry.gap}s / ${entry.minGap}s minimum`}</span>{entry.reason && <small>{entry.reason}</small>}</li>)}</ol> : <small>No movement events logged yet. Start the camera and move through one cycle.</small>}
           </details>
         </aside>
       </section>
