@@ -18,6 +18,7 @@
 - **Why useful**: video allows us to run the same MediaPipe pose extractor used by Kinexa; annotations/joint ground truth allow comparison against the source labels. Subject and repetition fields support grouped evaluation.
 - **Limitations**: small cohort; controlled lab capture; not a post-operative patient dataset. The Zenodo record restricts use to academic/nonprofit research and says commercial use requires contacting the authors. Review current terms before distributing results or using commercially.
 - **Plan**: start with its squat and leg-lunge clips; derive Kinexa's FR-5 features from RGB using MediaPipe so model inputs match runtime. Use provided motion capture joints for pose-estimator analysis/quality checks, not as a mixed feature source in the same model.
+- **Local run**: this checkout currently has `3d_joints.zip`, `joints_names.txt`, and `Segmentation.csv`, but no `videos.zip`. The skeleton adapter extracted 191 squat reps from 9 participants (130 correct, 61 incorrect). Five-fold subject-grouped macro-F1 was 0.672 for RF (95% subject-bootstrap interval 0.554–0.746) and 0.717 for XGBoost (0.634–0.793). These are motion-capture feature results only; they do not test MediaPipe or live video. Experimental artifacts are saved locally under `models/experiments/rehab246-squat-skeleton/` and are not integrated into live inference.
 
 ### UCOPhyRehab++ — multi-exercise RGB-derived modalities
 - **Source**: [Zenodo record](https://zenodo.org/records/17935737)
