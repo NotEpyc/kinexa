@@ -1,9 +1,9 @@
-"""Extract one MediaPipe feature row per labelled squat video.
+"""Extract one MediaPipe feature row per labelled squat video and camera view.
 
 Mendeley labels each entire execution as good/bad. This adapter preserves that
-granularity: it does not copy video labels onto individual repetitions. Side
-view image coordinates are scaled by frame dimensions before 2D angle
-computation, and the more visible leg is selected for sagittal-plane features.
+granularity: it does not copy video labels onto individual repetitions. It uses
+MediaPipe world landmarks and 3D angles across side, front, and diagonal views,
+selecting the more visible leg for each video.
 The resulting session model is experimental and is not compatible with Kinexa's
 per-repetition quality inference endpoint.
 """
@@ -26,7 +26,7 @@ from app.pose import LANDMARKS, PoseExtractor, extract_landmarks
 
 
 LABEL_PATTERN = re.compile(
-    r"(?:^|/)subject_(?P<subject>\d+)/squat/(?P<label>good|bad)/side/(?P<filename>[^/]+\.mp4)$",
+    r"(?:^|/)subject_(?P<subject>\d+)/squat/(?P<label>good|bad)/(?P<view>side|front|diagonal)/(?P<filename>[^/]+\.mp4)$",
     re.IGNORECASE,
 )
 FEATURE_NAMES = (
@@ -40,17 +40,6 @@ FEATURE_NAMES = (
     "trunk_median_lean_deg",
 )
 VISIBILITY_THRESHOLD = 0.5
-
-
-def _angle_2d(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Return 0..180 angle at b from pixel-space points a-b-c."""
-    ba = a - b
-    bc = c - b
-    denominator = float(np.linalg.norm(ba) * np.linalg.norm(bc))
-    if denominator < 1e-8:
-        return float("nan")
-    cosine = float(np.clip(np.dot(ba, bc) / denominator, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cosine)))
 
 
 def _summarize_video(video_path: Path, pose_model_path: Path) -> dict[str, float] | None:
@@ -69,17 +58,17 @@ def _summarize_video(video_path: Path, pose_model_path: Path) -> dict[str, float
     samples: list[tuple[np.ndarray, np.ndarray]] = []
     try:
         for _, result, _ in pose.process_video(str(video_path)):
-            norm, _ = extract_landmarks(result)
-            if norm is not None:
-                samples.append((norm[:, :3].copy(), norm[:, 3].copy()))
+            norm, world = extract_landmarks(result)
+            if norm is not None and world is not None:
+                samples.append((world.copy(), norm[:, 3].copy()))
     finally:
         pose.landmarker.close()
 
     if not samples:
         return None
 
-    # Select one camera-facing leg for the entire clip. Averaging or requiring
-    # both legs in profile view can reject otherwise usable side-view frames.
+    # Select the more visible leg for the whole clip. World-space 3D angles
+    # allow the same feature definition to be used across camera views.
     side_scores: dict[str, list[float]] = {"left": [], "right": []}
     for _, visibility in samples:
         for side in ("left", "right"):
@@ -99,21 +88,20 @@ def _summarize_video(video_path: Path, pose_model_path: Path) -> dict[str, float
     for coordinates, visibility in samples:
         if min(visibility[hip_idx], visibility[knee_idx], visibility[ankle_idx]) < VISIBILITY_THRESHOLD:
             continue
-        points = coordinates[:, :2] * np.asarray([width, height], dtype=np.float64)
-        knee_angle = _angle_2d(points[hip_idx], points[knee_idx], points[ankle_idx])
+        knee_angle = _angle_3d(coordinates[hip_idx], coordinates[knee_idx], coordinates[ankle_idx])
         if np.isfinite(knee_angle):
             knee_angles.append(knee_angle)
 
         if min(visibility[shoulder_idx], visibility[hip_idx], visibility[knee_idx]) >= VISIBILITY_THRESHOLD:
-            hip_angle = _angle_2d(points[shoulder_idx], points[hip_idx], points[knee_idx])
+            hip_angle = _angle_3d(coordinates[shoulder_idx], coordinates[hip_idx], coordinates[knee_idx])
             if np.isfinite(hip_angle):
                 hip_angles.append(hip_angle)
 
         if min(visibility[shoulder_left], visibility[shoulder_right], visibility[hip_left], visibility[hip_right]) >= VISIBILITY_THRESHOLD:
-            shoulder_mid = (points[shoulder_left] + points[shoulder_right]) / 2.0
-            hip_mid = (points[hip_left] + points[hip_right]) / 2.0
+            shoulder_mid = (coordinates[shoulder_left] + coordinates[shoulder_right]) / 2.0
+            hip_mid = (coordinates[hip_left] + coordinates[hip_right]) / 2.0
             trunk = shoulder_mid - hip_mid
-            lean = math.degrees(math.atan2(abs(float(trunk[0])), abs(float(trunk[1]))))
+            lean = math.degrees(math.acos(float(np.clip(abs(trunk[1]) / max(np.linalg.norm(trunk), 1e-8), -1.0, 1.0))))
             if np.isfinite(lean):
                 trunk_angles.append(lean)
 
@@ -137,6 +125,17 @@ def _summarize_video(video_path: Path, pose_model_path: Path) -> dict[str, float
         "valid_knee_frames": len(knee_angles),
         "duration_s": float(frame_count / fps),
     }
+
+
+def _angle_3d(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Return the 0..180 Euclidean 3D angle at b."""
+    ba = a - b
+    bc = c - b
+    denominator = float(np.linalg.norm(ba) * np.linalg.norm(bc))
+    if denominator < 1e-8:
+        return float("nan")
+    cosine = float(np.clip(np.dot(ba, bc) / denominator, -1.0, 1.0))
+    return float(np.degrees(np.arccos(cosine)))
 
 
 def prepare(
@@ -166,7 +165,7 @@ def prepare(
                 raise ValueError("--max-videos must be greater than zero.")
             members = members[:max_videos]
         if not members:
-            raise ValueError("No subject-labelled squat side-view MP4 files were found in the archive.")
+            raise ValueError("No subject-labelled squat MP4 files were found in the archive.")
 
         temp_root = output_path.parents[1] / "processed" / ".mendeley-tmp"
         temp_root.mkdir(parents=True, exist_ok=True)
@@ -186,7 +185,7 @@ def prepare(
                         "label": label,
                         "subject_id": f"subject_{int(labels['subject']):03d}",
                         "video_id": Path(member).stem,
-                        "view": "side",
+                        "view": labels["view"].casefold(),
                         "dataset": "Mendeley_Seven_Exercises_v3",
                         "label_granularity": "video_execution",
                         "label_assignment": "source_video_label",
@@ -231,9 +230,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=project_root / "data" / "features" / "mendeley_squat_side_sessions.csv",
+        default=project_root / "data" / "features" / "mendeley_squat_sessions_3d.csv",
     )
-    parser.add_argument("--max-videos", type=int, help="Optional pilot limit; omit to process every squat side-view video.")
+    parser.add_argument("--max-videos", type=int, help="Optional pilot limit; omit to process all squat view videos.")
     return parser.parse_args()
 
 

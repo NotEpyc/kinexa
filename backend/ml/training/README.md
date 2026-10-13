@@ -22,17 +22,19 @@ The currently checked-in `squat_rf_v1` is an advisory model because it was train
 
 The Mendeley multi-view dataset now supplies MediaPipe-derived **video-level** squat examples. Its experimental session classifier is not the per-rep model used by live inference and is not camera-validated clinical evidence. The product's per-rep model still needs therapist-reviewed MediaPipe rep labels before it can be promoted beyond advisory status.
 
-### Mendeley squat side-view session experiment
+### Mendeley squat multi-view session experiment
 
-The [Mendeley dataset](https://data.mendeley.com/datasets/kgbb3yn47p/3) contains whole-video good/bad labels, so training stays at one row per video. The adapter uses the visible leg in the side view and image coordinates scaled by frame size. Do not copy these labels onto repetitions or load this artifact into the per-rep quality endpoint.
+The [Mendeley dataset](https://data.mendeley.com/datasets/kgbb3yn47p/3) contains whole-video good/bad labels, so training stays at one row per video. The adapter uses MediaPipe world landmarks and a consistent 3D angle schema across side, front, and diagonal views. Do not copy these labels onto repetitions or load these artifacts into the per-rep quality endpoint.
 
 ```powershell
 cd backend
 python -m ml.datasets.prepare_mendeley_squat_sessions
-python -m ml.training.train_mendeley_session
+python -m ml.training.train_mendeley_session ..\data\features\mendeley_squat_sessions_3d.csv --output-dir ..\models\experiments\mendeley-squat-multiview-session
 ```
 
-Features are written to `data/features/mendeley_squat_side_sessions.csv` and the experimental artifact/metadata to `models/experiments/mendeley-squat-session/`. The current run yielded 50 videos from 25 subjects, with balanced source labels. Its subject-grouped macro-F1 was about 0.52 (95% subject-bootstrap interval about 0.40–0.64), near chance; do not use it for feedback or replace the existing per-rep artifact. The session classifier uses a different feature schema and label granularity from live inference.
+The current extraction yielded 150 videos from 25 subjects (75 good, 75 bad), with 50 videos per view. Five-fold `StratifiedGroupKFold` keeps each participant entirely within one fold. Random Forest macro-F1 was 0.571 (subject-bootstrap 95% interval 0.486–0.645) across all views; the same model scored 0.679 (0.554–0.800) on side-only and 0.660 on front-only, but only 0.420 on diagonal-only. A side+front pooled RF scored 0.610. A pre-specified logistic baseline on all views scored 0.613. These small, correlated video-level samples and wide intervals do not support a reliable general-purpose quality model; camera view materially changes performance. Treat these as experimental findings, not evidence of live per-rep accuracy.
+
+Artifacts are stored separately under `models/experiments/mendeley-squat-multiview-session/` and `models/experiments/mendeley-squat-side-3d-session/`. The training feature schema and label granularity differ from live per-rep inference. No artifact is integrated into the API.
 
 The local KIMORE extract still cannot be used for subject-independent validation because it has no subject/sequence map. The local UI-PRMD flat files do not retain subject IDs or a confirmed per-rep-to-frame mapping. Do not merge these datasets or copy an execution-level KIMORE score onto each rep without explicitly recording that approximation.
 

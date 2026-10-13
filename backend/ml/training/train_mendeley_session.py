@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import StratifiedGroupKFold
 
 from ml.datasets.prepare_mendeley_squat_sessions import FEATURE_NAMES
 
@@ -65,7 +65,8 @@ def train(features_path: Path, output_dir: Path, folds: int = 5, seed: int = 42)
     )
     oof = np.full(len(frame), -1, dtype=np.int64)
     fold_scores = []
-    for train_idx, valid_idx in GroupKFold(n_splits=n_splits).split(x, y, groups):
+    splitter = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    for train_idx, valid_idx in splitter.split(x, y, groups):
         model = RandomForestClassifier(**model_template.get_params())
         model.fit(x[train_idx], y[train_idx])
         oof[valid_idx] = model.predict(x[valid_idx])
@@ -89,7 +90,7 @@ def train(features_path: Path, output_dir: Path, folds: int = 5, seed: int = 42)
     final_model = RandomForestClassifier(**model_template.get_params())
     final_model.fit(x, y)
     output_dir.mkdir(parents=True, exist_ok=True)
-    version = "mendeley_squat_session_rf_v1"
+    version = "mendeley_squat_session_rf_3d_v1"
     model_path = output_dir / f"{version}.joblib"
     metadata_path = output_dir / f"{version}.json"
     joblib.dump(final_model, model_path)
@@ -108,7 +109,7 @@ def train(features_path: Path, output_dir: Path, folds: int = 5, seed: int = 42)
         "n_subjects": int(group_count),
         "group_column": "subject_id",
         "cv_folds": n_splits,
-        "validation": "GroupKFold; all videos from a participant stay in one fold",
+        "validation": "StratifiedGroupKFold; all videos from a participant stay in one fold",
         "metrics": metrics,
         "fold_scores": fold_scores,
         "confusion_matrix": confusion_matrix(y, oof).tolist(),
@@ -118,10 +119,10 @@ def train(features_path: Path, output_dir: Path, folds: int = 5, seed: int = 42)
         "camera_validation": None,
         "notes": [
             "Experimental baseline from source good/bad video labels.",
-            "Only squat side-view videos were used; the archive also contains front and diagonal views.",
+            f"Camera views included: {sorted(frame['view'].astype(str).unique().tolist()) if 'view' in frame else ['unspecified']}.",
             "One feature row per labeled video; no video label was copied to individual repetitions.",
             "Small public cohort; subject-grouped scores are preliminary and do not establish clinical validity or therapist agreement.",
-            "The features use MediaPipe image-space 2D angles in the side-view plane and differ from the current live per-rep world-landmark model schema.",
+            "The features use MediaPipe world-landmark 3D angles and differ from the current live per-rep feature schema; this session model is not compatible with per-rep inference.",
         ],
     }
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
