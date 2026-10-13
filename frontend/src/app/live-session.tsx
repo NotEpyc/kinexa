@@ -5,6 +5,7 @@ import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getLiveExercise } from '@/lib/exercises';
 import type { ExerciseReadiness } from '@/lib/exercises';
+import type { SquatSample } from '@/lib/exercises/squat-strategy';
 
 type Point = { x: number; y: number; z: number; visibility?: number };
 type Rep = {
@@ -17,15 +18,7 @@ type Rep = {
   cue: string;
   model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
-type RepSample = {
-  time: number;
-  leftKnee: number | null;
-  rightKnee: number | null;
-  leftHip: number | null;
-  rightHip: number | null;
-  primaryKnee: number;
-  trunkLean: number | null;
-};
+type RepSample = SquatSample;
 type AngleHistoryPoint = { seconds: number; leftKnee: number | null; rightKnee: number | null };
 type DetectorLog = {
   time: string;
@@ -80,65 +73,6 @@ const CONNECTIONS: Array<[number, number]> = [
   [23, 25], [25, 27], [27, 31], [24, 26], [26, 28], [28, 32], [27, 29], [29, 31], [28, 30], [30, 32],
 ];
 
-function angle(a: Point, b: Point, c: Point) {
-  const ba = [a.y - b.y, a.z - b.z];
-  const bc = [c.y - b.y, c.z - b.z];
-  const denominator = Math.hypot(ba[0], ba[1]) * Math.hypot(bc[0], bc[1]);
-  if (!denominator) return null;
-  const cosine = Math.max(-1, Math.min(1, (ba[0] * bc[0] + ba[1] * bc[1]) / denominator));
-  return Math.round((Math.acos(cosine) * 180) / Math.PI);
-}
-
-function hasReliableKnee(screen: Point[], indices: [number, number, number]) {
-  return indices.every((index) => (screen[index]?.visibility ?? 0) >= DETECTOR.kneeLandmarkVisibility);
-}
-
-function gradient(values: number[], times: number[]) {
-  return values.map((value, index) => {
-    if (index === 0) return (values[1] - value) / (times[1] - times[0]);
-    if (index === values.length - 1) return (value - values[index - 1]) / (times[index] - times[index - 1]);
-    const before = times[index] - times[index - 1];
-    const after = times[index + 1] - times[index];
-    if (before <= 0 || after <= 0) return 0;
-    return (-after / (before * (before + after))) * values[index - 1]
-      + ((after - before) / (before * after)) * value
-      + (before / (after * (before + after))) * values[index + 1];
-  });
-}
-
-function makeSquatModelFeatures(samples: RepSample[]) {
-  const kneeSamples = samples.filter((sample) => sample.leftKnee !== null && sample.rightKnee !== null);
-  const hipSamples = samples.filter((sample) => sample.leftHip !== null && sample.rightHip !== null);
-  const trunkSamples = samples.filter((sample) => sample.trunkLean !== null);
-  if (kneeSamples.length < 5 || hipSamples.length < 1 || trunkSamples.length < 1) return null;
-
-  const bottom = kneeSamples.reduce((lowest, sample) => sample.primaryKnee < lowest.primaryKnee ? sample : lowest);
-  const startTime = samples[0]?.time;
-  const endTime = samples.at(-1)?.time;
-  if (startTime === undefined || endTime === undefined || endTime <= startTime) return null;
-  const nearestTrunk = trunkSamples.reduce((nearest, sample) => Math.abs(sample.time - bottom.time) < Math.abs(nearest.time - bottom.time) ? sample : nearest);
-  const times = kneeSamples.map((sample) => sample.time);
-  const leftAngles = kneeSamples.map((sample) => sample.leftKnee as number);
-  if (times.length < 5) return null;
-  const velocity = gradient(leftAngles, times);
-  const acceleration = gradient(velocity, times);
-  const jerk = gradient(acceleration, times);
-  const meanJerk = jerk.reduce((sum, value) => sum + value, 0) / jerk.length;
-  const jerkVariance = jerk.reduce((sum, value) => sum + (value - meanJerk) ** 2, 0) / jerk.length;
-  return {
-    min_left_knee_angle: Math.min(...leftAngles),
-    min_right_knee_angle: Math.min(...kneeSamples.map((sample) => sample.rightKnee as number)),
-    knee_asymmetry: Math.abs((bottom.leftKnee as number) - (bottom.rightKnee as number)),
-    min_hip_angle: Math.min(...hipSamples.flatMap((sample) => [sample.leftHip as number, sample.rightHip as number])),
-    max_trunk_lean: Math.max(...trunkSamples.map((sample) => sample.trunkLean as number)),
-    trunk_lean_at_bottom: nearestTrunk.trunkLean as number,
-    duration: endTime - startTime,
-    descent_time: Math.max(0, bottom.time - startTime),
-    ascent_time: Math.max(0, endTime - bottom.time),
-    smoothness: Math.sqrt(jerkVariance),
-  };
-}
-
 async function requestExerciseModel(exercise: string, features: Record<string, number> | null) {
   if (!features) return { status: 'unavailable' as const, reason: 'Not enough clearly visible samples to calculate all model features.' };
   try {
@@ -161,15 +95,6 @@ async function requestExerciseModel(exercise: string, features: Record<string, n
   } catch {
     return { status: 'unavailable' as const, reason: 'Model service is offline; therapist ROM feedback remains active.' };
   }
-}
-
-function trunkLean(points: Point[], screen: Point[]) {
-  if (![11, 12, 23, 24].every((index) => (screen[index]?.visibility ?? 0) >= 0.45)) return null;
-  const shoulderY = (points[11].y + points[12].y) / 2;
-  const hipY = (points[23].y + points[24].y) / 2;
-  const shoulderZ = (points[11].z + points[12].z) / 2;
-  const hipZ = (points[23].z + points[24].z) / 2;
-  return Math.round((Math.atan2(Math.abs(shoulderZ - hipZ), Math.abs(shoulderY - hipY)) * 180) / Math.PI);
 }
 
 export default function LiveSession() {
@@ -331,16 +256,10 @@ export default function LiveSession() {
             // MediaPipe indices use the subject's anatomical left/right, even though the camera preview is mirrored.
             // Low-confidence inferred joints can make an occluded support leg appear to bend.
             // Leave that side blank in the chart and exclude it from rep validation instead.
-            const leftVisible = hasReliableKnee(screen, [23, 25, 27]);
-            const rightVisible = hasReliableKnee(screen, [24, 26, 28]);
-            const left = leftVisible ? angle(points[23], points[25], points[27]) : null;
-            const right = rightVisible ? angle(points[24], points[26], points[28]) : null;
-            const leftHip = leftVisible && (screen[11]?.visibility ?? 0) >= DETECTOR.kneeLandmarkVisibility ? angle(points[11], points[23], points[25]) : null;
-            const rightHip = rightVisible && (screen[12]?.visibility ?? 0) >= DETECTOR.kneeLandmarkVisibility ? angle(points[12], points[24], points[26]) : null;
-            const currentTrunkLean = trunkLean(points, screen);
-            const candidate = left !== null && right !== null ? (Math.min(screen[23].visibility ?? 0, screen[25].visibility ?? 0, screen[27].visibility ?? 0) >= Math.min(screen[24].visibility ?? 0, screen[26].visibility ?? 0, screen[28].visibility ?? 0) ? left : right) : left ?? right;
-            if (candidate !== null) {
-              const now = performance.now();
+            const now = performance.now();
+            const sample = EXERCISE.strategy.samplePose(points, screen, now / 1000, DETECTOR.kneeLandmarkVisibility) as RepSample | null;
+            if (sample !== null) {
+              const { leftKnee: left, rightKnee: right, leftHip, rightHip, primaryKnee: candidate, trunkLean: currentTrunkLean } = sample;
               const smoothed = smoothedAngleRef.current === null ? candidate : smoothedAngleRef.current * DETECTOR.smoothingPreviousWeight + candidate * (1 - DETECTOR.smoothingPreviousWeight);
               smoothedAngleRef.current = smoothed;
               if (now - lastUiUpdateRef.current > 150) {
@@ -353,15 +272,6 @@ export default function LiveSession() {
                 }
                 lastUiUpdateRef.current = now;
               }
-              const sample: RepSample = {
-                time: now / 1000,
-                leftKnee: left,
-                rightKnee: right,
-                leftHip,
-                rightHip,
-                primaryKnee: candidate,
-                trunkLean: currentTrunkLean,
-              };
               if (phaseRef.current === 'descending') repSamplesRef.current.push(sample);
               if (phaseRef.current === 'ready') {
                 const baseline = baselineRef.current;
@@ -380,11 +290,14 @@ export default function LiveSession() {
                 lastBaselineUpdateRef.current = now / 1000;
                 const calibratedTop = baselineRef.current ?? candidate;
                 const startThreshold = Math.max(DETECTOR.startThresholdMinDegrees, Math.min(DETECTOR.startThresholdMaxDegrees, Math.round(Number(minRepMovement) * DETECTOR.startThresholdFraction)));
-                if (smoothed <= calibratedTop - startThreshold) {
+                const descending = EXERCISE.descentDirection === 'decrease'
+                  ? smoothed <= calibratedTop - startThreshold
+                  : smoothed >= calibratedTop + startThreshold;
+                if (descending) {
                   phaseRef.current = 'descending'; lowRef.current = smoothed; startAngleRef.current = calibratedTop;
                   startTimeRef.current = now / 1000; repSamplesRef.current = [sample];
                   startTriggerThresholdRef.current = startThreshold;
-                  excursionThresholdRef.current = Number(minRepMovement); setPhase('Lower with control');
+                  excursionThresholdRef.current = Number(minRepMovement); setPhase(EXERCISE.descentDirection === 'decrease' ? 'Lower with control' : 'Move into the exercise phase');
                   logDetector({
                     time: new Date().toLocaleTimeString(), event: 'started', angle: Math.round(smoothed),
                     baseline: Math.round(calibratedTop), bottom: null, excursion: 0, triggerThreshold: startThreshold,
@@ -399,62 +312,40 @@ export default function LiveSession() {
                   });
                 }
               } else if (phaseRef.current === 'descending') {
-                lowRef.current = Math.min(lowRef.current ?? smoothed, smoothed);
+                lowRef.current = EXERCISE.descentDirection === 'decrease'
+                  ? Math.min(lowRef.current ?? smoothed, smoothed)
+                  : Math.max(lowRef.current ?? smoothed, smoothed);
                 const repBottom = lowRef.current ?? smoothed;
                 const repTop = startAngleRef.current ?? smoothed;
-                const repExcursion = repTop - repBottom;
+                const repExcursion = EXERCISE.descentDirection === 'decrease' ? repTop - repBottom : repBottom - repTop;
                 const returnOffset = Math.min(DETECTOR.maxStandingReturnOffsetDegrees, Math.max(DETECTOR.returnOffsetFloorDegrees, Math.round(excursionThresholdRef.current * 0.9)));
                 // Require recovery near standing, but tolerate a modest shift from the
                 // calibrated top. The bottom-relative guard prevents a tiny rebound from
                 // ending a rep before the person has substantially risen.
-                const returnLevel = Math.max(
-                  repTop - returnOffset,
-                  repBottom + Math.max(DETECTOR.minimumRiseFromBottomDegrees, repExcursion * DETECTOR.returnFromBottomFraction),
-                );
-                if (smoothed >= returnLevel) {
+                const minimumReturnMovement = Math.max(DETECTOR.minimumRiseFromBottomDegrees, repExcursion * DETECTOR.returnFromBottomFraction);
+                const returnLevel = EXERCISE.descentDirection === 'decrease'
+                  ? Math.max(repTop - returnOffset, repBottom + minimumReturnMovement)
+                  : Math.min(repTop + returnOffset, repBottom - minimumReturnMovement);
+                const returned = EXERCISE.descentDirection === 'decrease' ? smoothed >= returnLevel : smoothed <= returnLevel;
+                if (returned) {
                   const bottom = lowRef.current ?? smoothed;
                   const baseline = startAngleRef.current ?? smoothed;
-                  const excursion = baseline - bottom;
+                  const excursion = EXERCISE.descentDirection === 'decrease' ? baseline - bottom : bottom - baseline;
                   const repSamples = repSamplesRef.current;
-                  const earlyWindow = repSamples.slice(0, Math.max(DETECTOR.minimumEarlyWindowFrames, Math.ceil(repSamples.length * DETECTOR.earlyWindowFraction)));
-                  const leftEarly = earlyWindow.flatMap((current) => current.leftKnee === null ? [] : [current.leftKnee]);
-                  const rightEarly = earlyWindow.flatMap((current) => current.rightKnee === null ? [] : [current.rightKnee]);
-                  const leftValues = repSamples.flatMap((current) => current.leftKnee === null ? [] : [current.leftKnee]);
-                  const rightValues = repSamples.flatMap((current) => current.rightKnee === null ? [] : [current.rightKnee]);
-                  const leftVisibleFrames = leftValues.length;
-                  const rightVisibleFrames = rightValues.length;
-                  const minStartFrames = Math.min(DETECTOR.minimumEarlyWindowFrames, Math.max(1, Math.ceil(earlyWindow.length * DETECTOR.minimumStartVisibleFraction)));
-                  const leftExcursion = leftEarly.length >= minStartFrames && leftValues.length >= DETECTOR.minimumSideVisibleFrames
-                    ? Number((Math.max(...leftEarly) - Math.min(...leftValues)).toFixed(1))
-                    : null;
-                  const rightExcursion = rightEarly.length >= minStartFrames && rightValues.length >= DETECTOR.minimumSideVisibleFrames
-                    ? Number((Math.max(...rightEarly) - Math.min(...rightValues)).toFixed(1))
-                    : null;
-                  const pairedSamples = repSamples.filter((current) => current.leftKnee !== null && current.rightKnee !== null);
-                  const deepestBilateralSample = pairedSamples.reduce<RepSample | null>((deepest, current) => {
-                    if (deepest === null) return current;
-                    const currentMean = ((current.leftKnee as number) + (current.rightKnee as number)) / 2;
-                    const deepestMean = ((deepest.leftKnee as number) + (deepest.rightKnee as number)) / 2;
-                    return currentMean < deepestMean ? current : deepest;
-                  }, null);
-                  const bottomAsymmetry = pairedSamples.length < DETECTOR.minimumPairedFrames || deepestBilateralSample === null
-                    ? null
-                    : Number(Math.abs((deepestBilateralSample.leftKnee as number) - (deepestBilateralSample.rightKnee as number)).toFixed(1));
-                  const bilateralRatio = leftExcursion !== null && rightExcursion !== null
-                    ? Number((Math.min(leftExcursion, rightExcursion) / Math.max(leftExcursion, rightExcursion, 1)).toFixed(2))
-                    : null;
-                  const minBilateralMovement = Math.max(DETECTOR.minimumBilateralMovementDegrees, Math.round(excursionThresholdRef.current * DETECTOR.minimumBilateralMovementFraction));
                   const duration = Math.max(0, now / 1000 - (startTimeRef.current ?? now / 1000));
                   const gap = lastRepEndTimeRef.current === null ? null : now / 1000 - lastRepEndTimeRef.current;
-                  const rejectionReasons: string[] = [];
-                  if (excursion < excursionThresholdRef.current) rejectionReasons.push(`movement ${excursion.toFixed(1)}° was below ${excursionThresholdRef.current}° minimum`);
-                  if (leftExcursion === null || rightExcursion === null) rejectionReasons.push(`bilateral knee travel could not be confirmed (left visible ${leftVisibleFrames}/${repSamples.length} rep frames, right ${rightVisibleFrames}/${repSamples.length}); keep both knees and ankles in view`);
-                  else if (leftExcursion < minBilateralMovement || rightExcursion < minBilateralMovement) rejectionReasons.push(`both knees must move at least ${minBilateralMovement}° (left ${leftExcursion}°, right ${rightExcursion}°)`);
-                  else if (bilateralRatio !== null && bilateralRatio < DETECTOR.minimumBilateralTravelRatio) rejectionReasons.push(`knee travel was too one-sided (left ${leftExcursion}°, right ${rightExcursion}°; weaker side ${Math.round(bilateralRatio * 100)}% of stronger side, minimum ${Math.round(DETECTOR.minimumBilateralTravelRatio * 100)}%)`);
-                  if (bottomAsymmetry === null) rejectionReasons.push('bottom knee symmetry could not be confirmed; keep both knees visible throughout the movement');
-                  else if (bottomAsymmetry > DETECTOR.maximumCountedKneeAsymmetryDegrees) rejectionReasons.push(`bottom knee angles differed by ${bottomAsymmetry}°, above the ${DETECTOR.maximumCountedKneeAsymmetryDegrees}° rep-count limit; this looks like one-sided movement`);
-                  if (duration < DETECTOR.minimumRepDurationSeconds) rejectionReasons.push(`rep duration ${duration.toFixed(2)}s was below ${DETECTOR.minimumRepDurationSeconds}s minimum`);
-                  if (gap !== null && gap < DETECTOR.minimumRepGapSeconds) rejectionReasons.push(`rep gap ${gap.toFixed(2)}s was below ${DETECTOR.minimumRepGapSeconds}s minimum`);
+                  const validation = EXERCISE.strategy.validateRep(repSamples, {
+                    excursion, minimumMovement: excursionThresholdRef.current, duration,
+                    minimumDuration: DETECTOR.minimumRepDurationSeconds, gap, minimumGap: DETECTOR.minimumRepGapSeconds,
+                  });
+                  const leftExcursion = validation.diagnostics.left_excursion;
+                  const rightExcursion = validation.diagnostics.right_excursion;
+                  const leftVisibleFrames = validation.diagnostics.left_visible_frames ?? 0;
+                  const rightVisibleFrames = validation.diagnostics.right_visible_frames ?? 0;
+                  const bottomAsymmetry = validation.diagnostics.bottom_asymmetry;
+                  const minBilateralMovement = validation.diagnostics.bilateral_minimum ?? 0;
+                  const bilateralRatio = validation.diagnostics.bilateral_ratio;
+                  const rejectionReasons = validation.accepted ? [] : [validation.reason];
                   const event = rejectionReasons.length ? 'rejected' : 'counted';
                   logDetector({
                     time: new Date().toLocaleTimeString(), event, angle: Math.round(smoothed),
@@ -465,7 +356,7 @@ export default function LiveSession() {
                     triggerThreshold: startTriggerThresholdRef.current, minMovement: excursionThresholdRef.current,
                     duration: Number(duration.toFixed(2)), minDuration: DETECTOR.minimumRepDurationSeconds,
                     gap: gap === null ? null : Number(gap.toFixed(2)), minGap: DETECTOR.minimumRepGapSeconds,
-                    reason: rejectionReasons.length ? rejectionReasons.join('; ') : 'movement, duration, and spacing thresholds met',
+                    reason: validation.reason,
                   });
                   if (event === 'counted') {
                     lastRepEndTimeRef.current = now / 1000;
@@ -474,35 +365,27 @@ export default function LiveSession() {
                       setRepMarkers((markers) => [...markers.filter((time) => time >= repMarker - 30), repMarker]);
                     }
                     const samples = repSamplesRef.current;
-                    const deepest = samples.reduce((lowest, current) => current.primaryKnee < lowest.primaryKnee ? current : lowest, sample);
-                    const asymmetry = deepest.leftKnee !== null && deepest.rightKnee !== null ? Math.abs(deepest.leftKnee - deepest.rightKnee) : null;
-                    const peakTrunkLean = samples.reduce((peak, current) => current.trunkLean === null ? peak : Math.max(peak ?? 0, current.trunkLean), null as number | null);
                     const kneeConfigured = minAngle !== '' && maxAngle !== '';
                     const prescribedKneeRange = kneeConfigured
                       ? toKinexaKneeRange(Number(minAngle), Number(maxAngle), kneeAngleConvention)
                       : null;
-                    const kneeOutside = prescribedKneeRange !== null && (bottom < prescribedKneeRange.min || bottom > prescribedKneeRange.max);
-                    const trunkOutside = maxTrunkAngle !== '' && peakTrunkLean !== null && peakTrunkLean > Number(maxTrunkAngle);
-                    const asymmetryOutside = maxAsymmetry !== '' && asymmetry !== null && asymmetry > Number(maxAsymmetry);
-                    const configuredMetricMissing = (maxTrunkAngle !== '' && peakTrunkLean === null) || (maxAsymmetry !== '' && asymmetry === null);
-                    const hasAnyLimit = kneeConfigured || maxTrunkAngle !== '' || maxAsymmetry !== '';
-                    const verdict: Rep['verdict'] = kneeOutside || trunkOutside || asymmetryOutside
+                    const assessment = EXERCISE.strategy.assessRep(samples, {
+                      ...(prescribedKneeRange ? { knee_angle: prescribedKneeRange } : {}),
+                      ...(maxTrunkAngle !== '' ? { trunk_lean: { max: Number(maxTrunkAngle) } } : {}),
+                      ...(maxAsymmetry !== '' ? { knee_asymmetry: { max: Number(maxAsymmetry) } } : {}),
+                    });
+                    const asymmetry = assessment.metrics.find((metric) => metric.name === 'knee_asymmetry')?.value ?? null;
+                    const peakTrunkLean = assessment.metrics.find((metric) => metric.name === 'trunk_lean')?.value ?? null;
+                    const verdict: Rep['verdict'] = assessment.feedbackStatus === 'outside_limits'
                       ? 'outside range'
-                      : configuredMetricMissing
+                      : assessment.feedbackStatus === 'not_assessable'
                         ? 'not assessable'
-                        : hasAnyLimit
+                        : assessment.feedbackStatus === 'within_limits'
                           ? 'within range'
                           : 'range not set';
-                    const cues: string[] = [];
-                    if (kneeOutside) cues.push(bottom < (prescribedKneeRange?.min ?? 0) ? 'You moved beyond the prescribed depth; reduce squat depth.' : 'Reach the prescribed depth, if comfortable.');
-                    else if (kneeConfigured) cues.push('Knee depth is within the prescribed range.');
-                    if (trunkOutside) cues.push(`Trunk lean reached ${peakTrunkLean}°, above the therapist-set ${maxTrunkAngle}° limit.`);
-                    else if (maxTrunkAngle !== '' && peakTrunkLean === null) cues.push('Trunk lean could not be assessed because shoulder or hip landmarks were not visible enough.');
-                    if (asymmetryOutside && asymmetry !== null) cues.push(`Knee angles differed by ${asymmetry}°, above the therapist-set ${maxAsymmetry}° limit.`);
-                    else if (maxAsymmetry !== '' && asymmetry === null) cues.push('Knee asymmetry could not be assessed because both knees were not visible enough.');
-                    if (!hasAnyLimit) cues.push('Set at least one therapist-prescribed limit to assess this rep.');
+                    const cues = assessment.cues;
                     const number = ++repNumberRef.current;
-                    const modelFeatures = makeSquatModelFeatures(samples);
+                    const modelFeatures = assessment.modelFeatures;
                     setReps((old) => [...old, {
                       number, angle: Math.round(bottom), asymmetry, maxTrunkLean: peakTrunkLean, duration,
                       verdict, cue: cues.join(' '), model: { status: 'checking' },
@@ -520,7 +403,7 @@ export default function LiveSession() {
                   phaseRef.current = 'ready'; lowRef.current = null; startAngleRef.current = null;
                   startTimeRef.current = null; repSamplesRef.current = []; setPhase('Return to a comfortable start');
                 }
-                else if (smoothed > (lowRef.current ?? smoothed) + 5) setPhase('Rise with control');
+                else if (EXERCISE.descentDirection === 'decrease' ? smoothed > (lowRef.current ?? smoothed) + 5 : smoothed < (lowRef.current ?? smoothed) - 5) setPhase(EXERCISE.descentDirection === 'decrease' ? 'Rise with control' : 'Return with control');
               }
             }
             else { setTracking('Pose detected · improve knee and ankle visibility'); setAngleNow(null); setTrunkNow(null); setAsymmetryNow(null); }

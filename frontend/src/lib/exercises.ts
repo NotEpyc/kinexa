@@ -1,3 +1,6 @@
+import { createSquatStrategy } from './exercises/squat-strategy';
+import type { LiveExerciseStrategy } from './exercises/contract';
+
 /** Live movement contracts. Add an exercise only after its own detector and checks exist. */
 export type ExerciseReadiness = 'rules_only' | 'model_advisory' | 'camera_validated';
 
@@ -9,6 +12,7 @@ export type LiveExerciseDefinition = {
   phases: readonly string[];
   readiness: ExerciseReadiness;
   readinessMessage: string;
+  strategy: LiveExerciseStrategy<any>;
   detector: {
     minRepMovementDegrees: number;
     minimumUserMovementDegrees: number;
@@ -51,6 +55,18 @@ export const LIVE_EXERCISES: Record<string, LiveExerciseDefinition> = {
     phases: ['standing', 'descent', 'bottom', 'ascent', 'standing'],
     readiness: 'model_advisory',
     readinessMessage: 'Research model is trained on motion-capture data; live-camera performance is not validated.',
+    strategy: createSquatStrategy({
+      kneeLandmarkVisibility: 0.65,
+      minimumBilateralTravelRatio: 0.35,
+      minimumBilateralMovementFraction: 0.5,
+      minimumBilateralMovementDegrees: 10,
+      maximumCountedKneeAsymmetryDegrees: 45,
+      minimumSideVisibleFrames: 3,
+      minimumPairedFrames: 3,
+      earlyWindowFraction: 0.35,
+      minimumEarlyWindowFrames: 3,
+      minimumStartVisibleFraction: 0.25,
+    }),
     detector: {
       minRepMovementDegrees: 20,
       minimumUserMovementDegrees: 8,
