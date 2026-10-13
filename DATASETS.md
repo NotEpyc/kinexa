@@ -2,6 +2,15 @@
 
 ## Video-capable datasets beyond squat
 
+### Mendeley multi-view fitness exercises
+- **Source**: [Mendeley Data v3](https://data.mendeley.com/datasets/kgbb3yn47p/3) (DOI: 10.17632/kgbb3yn47p.3)
+- **Exercises**: seven fitness movements, including bodyweight squat, push-up, dumbbell row/curl/press, side bend, and triceps extension.
+- **Data/labels**: raw MP4 videos, each labeled good or bad for the whole execution, with subject IDs and front/side/diagonal views. The record lists CC BY 4.0; retain attribution and review the license before redistribution.
+- **Local archive**: `data/raw/mendeley-seven-exercises/dataset-subject-wise.zip` (gitignored; do not commit the multi-gigabyte archive).
+- **Local audit**: 1,042 MP4 files across 26 subject folders; the squat subset has 150 videos for 25 subjects (subject_025 has no squat clips), balanced across good/bad and three views. Kinexa currently extracts the 50 squat side-view videos only.
+- **Preparation/training**: `backend/ml/datasets/prepare_mendeley_squat_sessions.py` extracts one MediaPipe feature row per video; `backend/ml/training/train_mendeley_session.py` trains a small Random Forest with subject-grouped cross-validation. Labels remain at video granularity.
+- **Limitations/results**: this session model has a separate feature schema and cannot serve per-rep live feedback. The current subject-grouped macro-F1 is 0.52 (95% bootstrap interval 0.40–0.64), near chance. Treat it as a failed/weak preliminary baseline, not a promoted product model. It does not provide therapist-set ROM labels or clinical validation.
+
 ### REHAB24-6 — recommended first video source
 - **Source**: [Zenodo record](https://zenodo.org/records/13305826) (DOI: 10.5281/zenodo.13305826)
 - **Exercises**: 6 including squat, leg lunge, leg abduction, push-up, arm abduction, and arm V/W movement.

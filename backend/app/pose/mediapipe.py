@@ -72,26 +72,29 @@ class PoseExtractor:
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {video_path}")
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30.0
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            if fps <= 0:
+                fps = 30.0
 
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+            frame_idx = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
 
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            timestamp_ms = int(frame_idx * 1000 / fps)
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                timestamp_ms = int(frame_idx * 1000 / fps)
 
-            result = self.process_frame(frame_rgb, timestamp_ms)
-            yield frame_idx, result, frame_idx / fps
+                result = self.process_frame(frame_rgb, timestamp_ms)
+                yield frame_idx, result, frame_idx / fps
 
-            frame_idx += 1
-
-        cap.release()
+                frame_idx += 1
+        finally:
+            # Release even when inference raises (for example, a reused VIDEO
+            # landmarker receives a non-monotonic timestamp on the next clip).
+            cap.release()
 
 
 def extract_landmarks(result: mp_vision.PoseLandmarkerResult) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
