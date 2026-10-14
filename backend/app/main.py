@@ -1,17 +1,35 @@
 """Kinexa FastAPI Application Entry Point."""
 
 from pathlib import Path
+import logging
+from contextlib import asynccontextmanager
+from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.routes import analyze, patients, plans, health, quality
+from app.db import Base, engine
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Create the v1 schema automatically for a fresh local PostgreSQL database.
+    # A missing DB should not prevent the camera-only experience from starting.
+    try:
+        Base.metadata.create_all(bind=engine)
+    except SQLAlchemyError:
+        logger.exception("PostgreSQL unavailable; persistence endpoints will return 503 until it is configured")
+    yield
 
 app = FastAPI(
     title="Kinexa API",
     description="Explainable Exercise Form Assessment Platform",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS for frontend

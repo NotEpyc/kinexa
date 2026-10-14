@@ -1,16 +1,22 @@
 """Video analysis endpoints."""
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from pydantic import BaseModel, Field
 from typing import Optional, List
 import uuid
 import tempfile
 import os
 import shutil
 import cv2
+from datetime import datetime, timezone
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.exercises.registry import get_exercise, supported_exercises
 from app.models.loader import get_model_loader
+from app.db import Analysis, ExercisePlan, Patient, PatientExerciseParameter, RepResultRecord, get_db
+from app.advice import personalized_advice
+from app.rules.engine import Metric, Parameter, Phase, Side
 
 router = APIRouter()
 
@@ -30,6 +36,7 @@ class RepResult(BaseModel):
     measurements: dict
     ml: Optional[dict] = None
     issues: list[IssueDetail] = []
+    advice: list[dict] = []
 
 
 class AnalyzeResponse(BaseModel):
@@ -49,6 +56,7 @@ async def analyze_video(
     video: UploadFile = File(...),
     patient_id: str = Form(...),
     exercise: str = Form("squat"),
+    db: Session = Depends(get_db),
 ):
     """
     Upload video + patient_id + exercise; returns per-rep analysis.
@@ -77,6 +85,9 @@ async def analyze_video(
     )
 
     try:
+        patient = db.get(Patient, patient_id)
+        if patient is None:
+            raise HTTPException(status_code=404, detail="Patient not found; create the patient before analyzing a video.")
         total_size = 0
         with open(temp_path, "wb") as temp_file:
             while True:
@@ -130,7 +141,22 @@ async def analyze_video(
             )
         
         exercise_analyzer = exercise_module.analyzer(model_path=model_path)
-        rules_engine = exercise_module.build_rules(patient_id)
+        plan = db.scalar(select(ExercisePlan).where(
+            ExercisePlan.patient_id == patient_id,
+            ExercisePlan.exercise == exercise,
+            ExercisePlan.active.is_(True),
+        ).order_by(ExercisePlan.created_at.desc()))
+        active_parameters = list(db.scalars(select(PatientExerciseParameter).where(
+            PatientExerciseParameter.plan_id == plan.id,
+            PatientExerciseParameter.effective_to.is_(None),
+            PatientExerciseParameter.effective_from <= datetime.now(timezone.utc),
+        ))) if plan else []
+        rule_parameters = [Parameter(
+            id=item.id, plan_id=item.plan_id, metric=Metric(item.metric), side=Side(item.side), phase=Phase(item.phase),
+            min_value=item.min_value, max_value=item.max_value, unit=item.unit, tolerance=item.tolerance,
+            effective_from=item.effective_from.isoformat(), effective_to=None, version=item.version,
+        ) for item in active_parameters]
+        rules_engine = exercise_module.build_rules(patient_id, rule_parameters or None)
         
         # Run analysis
         result = exercise_analyzer.analyze_video(temp_path, rules_engine)
@@ -188,6 +214,11 @@ async def analyze_video(
                 "not_assessable": "not_assessable"
             }
             status_str = status_map.get(assessment.status.value, "not_assessable")
+            measured = [{
+                "metric": item.metric.value, "side": item.side.value, "phase": item.phase.value,
+                "value": item.value, "unit": item.unit,
+            } for item in assessment.measurements]
+            advice = personalized_advice(measured, active_parameters)
             
             if status_str == "correct":
                 correct_count += 1
@@ -203,7 +234,8 @@ async def analyze_video(
                 end_s=assessment.end_time,
                 measurements=measurements_dict,
                 ml=assessment.ml_output,
-                issues=[IssueDetail(**issue) for issue in issues]
+                issues=[IssueDetail(**issue) for issue in issues],
+                advice=advice,
             )
             rep_results.append(rep_result)
         
@@ -223,8 +255,29 @@ async def analyze_video(
         total = len(rep_results)
         score = int((correct_count / total * 100)) if total > 0 else 0
         
+        analysis_id = str(uuid.uuid4())
+        stored_analysis = Analysis(
+            id=analysis_id, patient_id=patient_id, plan_id=plan.id if plan else None,
+            exercise=exercise, source="upload",
+            constraints_snapshot={"plan_id": plan.id if plan else None, "parameters": [
+                {"id": p.id, "metric": p.metric, "side": p.side, "phase": p.phase,
+                 "min_value": p.min_value, "max_value": p.max_value, "unit": p.unit,
+                 "tolerance": p.tolerance, "version": p.version}
+                for p in active_parameters
+            ]},
+            model_version=active_quality_model or f"{exercise}_rules_v0", score=score,
+            total_reps=total, correct_reps=correct_count, incorrect_reps=incorrect_count,
+            warnings=result.warnings,
+        )
+        stored_analysis.reps = [RepResultRecord(
+            rep_index=rep.rep, status=rep.status, start_s=rep.start_s, bottom_s=rep.bottom_s, end_s=rep.end_s,
+            measurements=rep.measurements, ml_output=rep.ml, issues=[item.model_dump() for item in rep.issues], advice=rep.advice,
+        ) for rep in rep_results]
+        db.add(stored_analysis)
+        db.commit()
+
         return AnalyzeResponse(
-            analysis_id=str(uuid.uuid4())[:8],
+            analysis_id=analysis_id,
             exercise=exercise,
             model_version=active_quality_model or f"{exercise}_rules_v0",
             total_reps=total,
@@ -251,13 +304,84 @@ async def analyze_video(
                 pass
 
 
+def _analysis_json(record: Analysis) -> dict:
+    return {
+        "analysis_id": record.id, "patient_id": record.patient_id, "plan_id": record.plan_id,
+        "exercise": record.exercise, "source": record.source, "model_version": record.model_version,
+        "score": record.score, "total_reps": record.total_reps, "correct_reps": record.correct_reps,
+        "incorrect_reps": record.incorrect_reps, "created_at": record.created_at.isoformat(),
+        "constraints_snapshot": record.constraints_snapshot, "warnings": record.warnings,
+        "reps": [{
+            "rep": item.rep_index, "status": item.status, "start_s": item.start_s,
+            "bottom_s": item.bottom_s, "end_s": item.end_s, "measurements": item.measurements,
+            "ml": item.ml_output, "issues": item.issues, "advice": item.advice,
+        } for item in record.reps],
+    }
+
+
 @router.get("/analyses/{analysis_id}")
-async def get_analysis(analysis_id: str):
-    """Fetch a stored analysis."""
-    raise HTTPException(status_code=501, detail="Not implemented")
+def get_analysis(analysis_id: str, db: Session = Depends(get_db)):
+    """Fetch a stored analysis and its rep-level results."""
+    record = db.get(Analysis, analysis_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Analysis not found")
+    return _analysis_json(record)
 
 
 @router.get("/patients/{patient_id}/analyses")
-async def get_patient_analyses(patient_id: str):
-    """History for a patient."""
-    raise HTTPException(status_code=501, detail="Not implemented")
+def get_patient_analyses(patient_id: str, db: Session = Depends(get_db)):
+    """Return stored upload and live-session history for a patient."""
+    if db.get(Patient, patient_id) is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    records = db.scalars(select(Analysis).where(Analysis.patient_id == patient_id).order_by(Analysis.created_at.desc()))
+    return [_analysis_json(record) for record in records]
+
+
+class LiveRepInput(BaseModel):
+    rep: int = Field(ge=1)
+    status: str
+    start_s: float = 0
+    bottom_s: float = 0
+    end_s: float = 0
+    measurements: dict = Field(default_factory=dict)
+    ml: dict | None = None
+    issues: list = Field(default_factory=list)
+    advice: list = Field(default_factory=list)
+
+
+class LiveSessionInput(BaseModel):
+    patient_id: str
+    exercise: str
+    model_version: str = "browser_rules_v1"
+    score: int = Field(ge=0, le=100)
+    total_reps: int = Field(ge=0)
+    correct_reps: int = Field(ge=0)
+    incorrect_reps: int = Field(ge=0)
+    constraints_snapshot: dict = Field(default_factory=dict)
+    reps: list[LiveRepInput] = Field(default_factory=list)
+
+
+@router.post("/live-sessions", status_code=201)
+def save_live_session(request: LiveSessionInput, db: Session = Depends(get_db)):
+    patient = db.get(Patient, request.patient_id)
+    if patient is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    plan = db.scalar(select(ExercisePlan).where(
+        ExercisePlan.patient_id == request.patient_id,
+        ExercisePlan.exercise == request.exercise,
+        ExercisePlan.active.is_(True),
+    ).order_by(ExercisePlan.created_at.desc()))
+    record = Analysis(
+        patient_id=request.patient_id, plan_id=plan.id if plan else None,
+        exercise=request.exercise, source="live", model_version=request.model_version,
+        score=request.score, total_reps=request.total_reps, correct_reps=request.correct_reps,
+        incorrect_reps=request.incorrect_reps, constraints_snapshot=request.constraints_snapshot,
+    )
+    record.reps = [RepResultRecord(
+        rep_index=item.rep, status=item.status, start_s=item.start_s, bottom_s=item.bottom_s,
+        end_s=item.end_s, measurements=item.measurements, ml_output=item.ml,
+        issues=item.issues, advice=item.advice,
+    ) for item in request.reps]
+    db.add(record)
+    db.commit()
+    return {"analysis_id": record.id, "patient_id": record.patient_id, "saved_reps": len(record.reps)}

@@ -2,11 +2,16 @@
 
 import math
 import os
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.advice import personalized_advice
+from app.db import ExercisePlan, Patient, PatientExerciseParameter, get_db
 from app.features.registry import EXERCISE_FEATURE_SCHEMAS, get_feature_schema
 from app.models.loader import get_model_loader
 
@@ -16,6 +21,12 @@ router = APIRouter()
 class QualityAssessmentRequest(BaseModel):
     exercise: str = Field(min_length=1, max_length=40)
     features: dict[str, float]
+
+
+class CoachRequest(BaseModel):
+    exercise: str = Field(min_length=1, max_length=40)
+    patient_id: str = Field(min_length=1, max_length=36)
+    measurements: list[dict[str, Any]]
 
 
 @router.get("/quality/exercises")
@@ -113,4 +124,37 @@ async def assess_quality(request: QualityAssessmentRequest) -> dict[str, Any]:
         "metrics": loader.metadata.metrics,
         "assessment": assessment,
         "scope": "research advisory; therapist-set ROM rules take precedence",
+    }
+
+
+@router.post("/quality/coach")
+def coach_rep(request: CoachRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    """Return targeted cues from the patient's active therapist plan."""
+    if db.get(Patient, request.patient_id) is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    plan = db.scalar(select(ExercisePlan).where(
+        ExercisePlan.patient_id == request.patient_id,
+        ExercisePlan.exercise == request.exercise,
+        ExercisePlan.active.is_(True),
+    ).order_by(ExercisePlan.created_at.desc()))
+    if plan is None:
+        return {
+            "personalized": False,
+            "plan_id": None,
+            "advice": [],
+            "message": "No active therapist plan exists for this exercise. Add prescribed limits to enable personalized advice.",
+        }
+    parameters = list(db.scalars(select(PatientExerciseParameter).where(
+        PatientExerciseParameter.plan_id == plan.id,
+        PatientExerciseParameter.effective_to.is_(None),
+        PatientExerciseParameter.effective_from <= datetime.now(timezone.utc),
+    )))
+    advice = personalized_advice(request.measurements, parameters)
+    return {
+        "personalized": True,
+        "plan_id": plan.id,
+        "parameter_versions": {p.id: p.version for p in parameters},
+        "advice": advice,
+        "message": "Your rep is within the currently configured plan limits." if not advice else None,
+        "scope": "Therapist-plan comparisons use measured movement. The ML model remains a separate general research advisory.",
     }

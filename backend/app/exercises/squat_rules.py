@@ -3,8 +3,10 @@
 from ..rules.engine import Metric, Parameter, Phase, RulesEngine
 
 
-def build_squat_rules(patient_id: str) -> RulesEngine:
-    """Build squat defaults; patient-specific plan lookup is a later DB integration."""
+def build_squat_rules(patient_id: str, parameters=None) -> RulesEngine:
+    """Build a rules engine from the active therapist plan, with safe defaults."""
+    if parameters:
+        return RulesEngine(parameters)
     defaults = [
         Parameter(
             id="default_knee_min", plan_id="default", metric="knee_angle", side="either",

@@ -16,7 +16,7 @@ from .squat_rules import build_squat_rules
 class ExerciseModule:
     name: str
     analyzer: Type
-    build_rules: Callable[[str], RulesEngine]
+    build_rules: Callable[..., RulesEngine]
 
 
 EXERCISES: dict[str, ExerciseModule] = {

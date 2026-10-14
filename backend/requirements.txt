@@ -8,7 +8,7 @@ pydantic-settings==2.3.4
 sqlalchemy==2.0.35
 alembic==1.13.1
 asyncpg==0.30.0
-psycopg==3.2.8
+psycopg[binary]==3.2.8
 # aiosqlite==0.19.0  # uncomment for SQLite dev
 
 # MediaPipe

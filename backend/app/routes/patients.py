@@ -1,28 +1,33 @@
-"""Patient management endpoints."""
+"""Persistent patient management endpoints."""
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
-import uuid
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.db import Patient, get_db
 
 router = APIRouter()
 
 
 class PatientCreate(BaseModel):
-    therapist_id: str
-    name: str
-    age: Optional[int] = None
+    therapist_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)
+    age: Optional[int] = Field(default=None, ge=0, le=130)
     notes: Optional[str] = None
 
 
 class PatientUpdate(BaseModel):
-    name: Optional[str] = None
-    age: Optional[int] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    age: Optional[int] = Field(default=None, ge=0, le=130)
     notes: Optional[str] = None
 
 
 class PatientResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: str
     therapist_id: str
     name: str
@@ -32,32 +37,37 @@ class PatientResponse(BaseModel):
 
 
 @router.post("/patients", response_model=PatientResponse, status_code=201)
-async def create_patient(patient: PatientCreate):
-    """Create a new patient."""
-    # TODO: Insert into PostgreSQL
-    return PatientResponse(
-        id=str(uuid.uuid4())[:8],
-        therapist_id=patient.therapist_id,
-        name=patient.name,
-        age=patient.age,
-        notes=patient.notes,
-        created_at=datetime.utcnow(),
-    )
+def create_patient(patient: PatientCreate, db: Session = Depends(get_db)):
+    record = Patient(**patient.model_dump())
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return record
 
 
 @router.get("/patients/{patient_id}", response_model=PatientResponse)
-async def get_patient(patient_id: str):
-    """Get patient by ID."""
-    raise HTTPException(status_code=501, detail="Not implemented")
+def get_patient(patient_id: str, db: Session = Depends(get_db)):
+    record = db.get(Patient, patient_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    return record
 
 
 @router.put("/patients/{patient_id}", response_model=PatientResponse)
-async def update_patient(patient_id: str, patient: PatientUpdate):
-    """Update patient."""
-    raise HTTPException(status_code=501, detail="Not implemented")
+def update_patient(patient_id: str, patient: PatientUpdate, db: Session = Depends(get_db)):
+    record = db.get(Patient, patient_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    for key, value in patient.model_dump(exclude_unset=True).items():
+        setattr(record, key, value)
+    db.commit()
+    db.refresh(record)
+    return record
 
 
-@router.get("/patients")
-async def list_patients(therapist_id: Optional[str] = None):
-    """List patients (filtered by therapist if provided)."""
-    raise HTTPException(status_code=501, detail="Not implemented")
+@router.get("/patients", response_model=list[PatientResponse])
+def list_patients(therapist_id: Optional[str] = None, db: Session = Depends(get_db)):
+    statement = select(Patient).order_by(Patient.created_at.desc())
+    if therapist_id:
+        statement = statement.where(Patient.therapist_id == therapist_id)
+    return list(db.scalars(statement))

@@ -7,7 +7,7 @@
 - **Git**
 - **Windows/Linux/macOS**
 
-PostgreSQL is **not connected to the current application yet**. SQLAlchemy/PostgreSQL packages are present, but there is no configured database engine, schema/migrations, or persistent CRUD implementation. You do not need to install a database to run the current prototype.
+PostgreSQL is used for patient profiles, therapist plans and limits, uploaded analyses, and saved live sessions. Install PostgreSQL and create a database named `kinexa` before using those features. The camera-only experience can still start without PostgreSQL, but persistence endpoints will report that the database is unavailable.
 
 ## Quick Start
 
@@ -35,7 +35,23 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
-The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. Live pose tracking and therapist ROM rules work without it; per-rep model inference requires the backend. The browser sends only derived movement features, not camera frames. No `.env` or database setup is currently required. The backend uses default in-code ROM limits for upload analysis; patient-specific values are not persisted yet.
+The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. The backend reads `DATABASE_URL`; on first startup it creates the v1 tables if PostgreSQL is available. Live pose tracking sends only derived movement features, not camera frames.
+
+### PostgreSQL Setup
+
+1. Install PostgreSQL and create a database named `kinexa` (for example, in pgAdmin).
+2. Set the connection string using your PostgreSQL username and password. You can add this line to a root `.env` file (ignored by Git), or set it in the backend terminal:
+
+```powershell
+$env:DATABASE_URL = "postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/kinexa"
+```
+
+3. Install backend requirements and start Uvicorn in that same terminal. Check `http://localhost:8000/api/health`; `database` should be `connected`.
+4. Create a patient on the live page under **Create a patient record**, or through `POST /api/patients`. Enter the returned patient ID, set therapist ranges, and choose **Save as plan**. **Load plan** restores saved limits. After a live session, choose **Save session** to store its reps and results.
+
+For a new patient through the API, use `POST /api/patients` with JSON such as `{"therapist_id":"therapist-1","name":"Example patient"}`. Patient IDs are UUIDs. The database stores profile fields, plan parameter versions, per-rep measurements/advice/model output, result history, and a constraints snapshot for each analysis. Uploaded videos are processed temporarily and removed; no video bytes are retained.
+
+The personalized cue layer compares measured rep values with the active patient plan and reports the value, limit, and reason. The Random Forest remains a general research advisory: it has not been fine-tuned per patient and does not generate clinical advice. Authentication and role-based access are not implemented yet, so this local prototype must not be exposed to real patient data over a network.
 
 ## Datasets
 
@@ -85,7 +101,7 @@ Add `xgb` to `--models` to compare XGBoost. The extractor omits repetitions mark
 
 ### Environment Variables
 
-No environment variables are needed to run the current prototype. If a model artifact is present, the backend loads `squat_rf_v1` by default. Set `KINEXA_QUALITY_MODEL` to a different registered artifact version to select it.
+Set `DATABASE_URL` to your PostgreSQL connection string before starting Uvicorn. If a model artifact is present, the backend loads `squat_rf_v1` by default; set `KINEXA_QUALITY_MODEL` to select a different registered artifact.
 
 ### Run Backend
 ```bash
@@ -99,8 +115,13 @@ python -m uvicorn app.main:app --reload
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/analyze` | Upload video + patient_id + exercise |
+| POST | `/api/live-sessions` | Persist a live camera session and per-rep results |
 | GET | `/api/analyses/{id}` | Fetch stored analysis |
 | GET | `/api/patients/{id}/analyses` | Patient history |
+| POST/GET/PUT | `/api/patients` | Persistent patient profiles |
+| POST/GET | `/api/patients/{id}/plans` | Exercise plans |
+| POST/GET/PUT | `/api/patients/{id}/plans/{plan_id}/parameters` | Therapist limits and versions |
+| POST | `/api/quality/coach` | Compare rep measurements with the active patient plan |
 | GET | `/api/health` | Service status |
 
 ### Test Endpoint
@@ -124,9 +145,9 @@ npm run dev
 
 The `.task` model bundle is not downloaded automatically or included in Git. Download the Pose Landmarker Full bundle from the [official MediaPipe guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker) and place it at `backend/models/pose_landmarker_full.task`. The live frontend loads it through `/api/pose-model`.
 
-## Database Status
+## Database Tables
 
-PostgreSQL is the planned database, but it is **not implemented or used by the current code**. Patient and plan create routes return generated IDs without storing records; list, update, and analysis-history routes are unfinished. SQLite is not currently wired either. Database setup instructions will be added when the database layer and migrations exist.
+The application creates `patients`, `exercise_plans`, `patient_exercise_parameters`, `analyses`, and `rep_results` on backend startup. Parameter edits are versioned by expiring the previous row and adding a new row. Results can be retrieved with `GET /api/analyses/{id}` and patient history with `GET /api/patients/{id}/analyses`.
 
 ## Development Workflow
 
@@ -183,7 +204,7 @@ kinexa/
 
 | Issue | Solution |
 |-------|----------|
-| `pg_config not found` | Install PostgreSQL dev tools or use SQLite (`aiosqlite`) |
+| `database: unavailable` | Start PostgreSQL, check that the `kinexa` database exists, and verify `DATABASE_URL` |
 | `Microsoft Visual C++ 14.0 required` | Install [VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) or use `--only-binary :all:` |
 | `MediaPipe model not found` | Run `python download_model.py` |
 | `No module named 'mediapipe'` | `pip install mediapipe==0.10.35` |
@@ -204,7 +225,7 @@ All dependencies pinned to versions with Python 3.13 wheels:
 | **C** | 🔄 | Squat Random Forest trained with subject-grouped validation; live-camera validation remains |
 | **D** | 🔄 | Exercise-registry upload API and per-rep quality inference; persistence/auth remain |
 | **E** | 🔄 | Live browser squat feedback sends per-rep features to the model; therapist ROM remains authoritative |
-| **F** | ⏳ | PostgreSQL persistence, auth, and analysis history |
+| **F** | 🔄 | PostgreSQL persistence and analysis history implemented; authentication remains |
 | **G** | ⏳ | Subject-independent and physiotherapist validation |
 
 ## License

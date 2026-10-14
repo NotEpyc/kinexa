@@ -17,6 +17,11 @@ type Rep = {
   duration: number;
   verdict: 'within range' | 'outside range' | 'range not set' | 'not assessable';
   cue: string;
+  measurements: Array<{ metric: string; side: string; phase: string; value: number; unit: string }>;
+  advice: Array<{ code: string; source: string; message: string }>;
+  start_s: number;
+  bottom_s: number;
+  end_s: number;
   model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
 type RepSample = KneeAngleSample;
@@ -96,10 +101,21 @@ async function requestExerciseModel(exercise: string, features: Record<string, n
   }
 }
 
+async function requestPatientAdvice(exercise: string, patientId: string, measurements: Rep['measurements']) {
+  const response = await fetch('/api/backend/quality/coach', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ exercise, patient_id: patientId, measurements }), cache: 'no-store',
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || 'Could not load patient-specific advice.');
+  return result as { personalized: boolean; plan_id: string | null; advice: Rep['advice']; message?: string };
+}
+
 export default function LiveSession() {
   const [exerciseId, setExerciseId] = useState('squat');
   const EXERCISE = getLiveExercise(exerciseId);
   const DETECTOR = EXERCISE.detector;
+  const TARGET_PHASE = EXERCISE.descentDirection === 'decrease' ? 'at_bottom' : 'at_peak';
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const landmarkerRef = useRef<PoseLandmarker | null>(null);
@@ -137,6 +153,12 @@ export default function LiveSession() {
   const [readiness, setReadiness] = useState<ExerciseReadiness>(EXERCISE.readiness);
   const [readinessReason, setReadinessReason] = useState(EXERCISE.readinessMessage);
   const [reps, setReps] = useState<Rep[]>([]);
+  const [patientId, setPatientId] = useState('');
+  const [therapistId, setTherapistId] = useState('');
+  const [newPatientName, setNewPatientName] = useState('');
+  const [databaseMessage, setDatabaseMessage] = useState('');
+  const [savingSession, setSavingSession] = useState(false);
+  const [savedPlanLoaded, setSavedPlanLoaded] = useState(false);
   const [detectorLogs, setDetectorLogs] = useState<DetectorLog[]>([]);
   const [angleHistory, setAngleHistory] = useState<AngleHistoryPoint[]>([]);
   const [repMarkers, setRepMarkers] = useState<number[]>([]);
@@ -180,6 +202,7 @@ export default function LiveSession() {
     setPhase('Hold a comfortable starting position');
     setReadiness(EXERCISE.readiness);
     setReadinessReason(EXERCISE.readinessMessage);
+    setSavedPlanLoaded(false);
     setMinAngle('');
     setMaxAngle('');
     setMaxTrunkAngle('');
@@ -192,6 +215,93 @@ export default function LiveSession() {
     console.info('[Kinexa rep detector]', entry);
     setDetectorLogs((current) => [...current.slice(-7), entry]);
   }, []);
+
+  const loadPatientPlan = async () => {
+    if (!patientId.trim()) { setDatabaseMessage('Enter a patient ID first.'); return; }
+    setSavedPlanLoaded(false);
+    setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry('');
+    setDatabaseMessage('Loading saved therapist plan…');
+    try {
+      const response = await fetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans`, { cache: 'no-store' });
+      const plans = await response.json();
+      if (!response.ok) throw new Error(plans.detail || 'Could not load patient plans.');
+      const plan = plans.find((item: { exercise: string; active: boolean }) => item.exercise === EXERCISE.id && item.active);
+      if (!plan) { setSavedPlanLoaded(false); setDatabaseMessage(`No active ${EXERCISE.label} plan for this patient. Set the range and save it as a plan.`); return; }
+      const paramsResponse = await fetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans/${plan.id}/parameters`, { cache: 'no-store' });
+      const parameters = await paramsResponse.json();
+      if (!paramsResponse.ok) throw new Error(parameters.detail || 'Could not load plan limits.');
+      const current = parameters.filter((item: { effective_to: string | null }) => !item.effective_to);
+      const knee = current.filter((item: { metric: string; side: string; phase: string }) => item.metric === 'knee_angle' && item.side === 'either' && item.phase === TARGET_PHASE);
+      const lower = knee.find((item: { min_value: number | null }) => item.min_value !== null)?.min_value;
+      const upper = knee.find((item: { max_value: number | null }) => item.max_value !== null)?.max_value;
+      if (lower !== undefined || upper !== undefined) {
+        setMinAngle(String(kneeAngleConvention === 'flexion' ? 180 - (upper ?? 180) : (lower ?? 0)));
+        setMaxAngle(String(kneeAngleConvention === 'flexion' ? 180 - (lower ?? 0) : (upper ?? 180)));
+      }
+      const trunk = current.find((item: { metric: string; max_value: number | null }) => item.metric === 'trunk_lean' && item.max_value !== null);
+      const asym = current.find((item: { metric: string; max_value: number | null }) => item.metric === 'asymmetry' && item.max_value !== null);
+      if (trunk) setMaxTrunkAngle(String(trunk.max_value));
+      if (asym) setMaxAsymmetry(String(asym.max_value));
+      setSavedPlanLoaded(true);
+      setDatabaseMessage(`Loaded saved plan for ${EXERCISE.label}. Personalized cues use its active therapist limits.`);
+    } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not load patient plan.'); }
+  };
+
+  const createPatient = async () => {
+    if (!therapistId.trim() || !newPatientName.trim()) { setDatabaseMessage('Enter a therapist ID and patient name to create a patient record.'); return; }
+    try {
+      const response = await fetch('/api/backend/patients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ therapist_id: therapistId.trim(), name: newPatientName.trim() }) });
+      const patient = await response.json();
+      if (!response.ok) throw new Error(patient.detail || 'Could not create patient.');
+      setPatientId(patient.id);
+      setSavedPlanLoaded(false);
+      setDatabaseMessage(`Patient saved. Their ID is ${patient.id}; you can now save a therapist plan.`);
+    } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not create patient.'); }
+  };
+
+  const savePatientPlan = async () => {
+    if (!patientId.trim()) { setDatabaseMessage('Enter an existing patient ID first.'); return; }
+    if ((minAngle === '') !== (maxAngle === '')) { setDatabaseMessage('Enter both knee limits before saving the plan.'); return; }
+    setDatabaseMessage('Saving therapist plan…');
+    try {
+      const base = `/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans`;
+      const planResponse = await fetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patient_id: patientId.trim(), exercise: EXERCISE.id, active: true }) });
+      const plan = await planResponse.json();
+      if (!planResponse.ok) throw new Error(plan.detail || 'Could not create the exercise plan.');
+      const effective_from = new Date().toISOString();
+      const params: Array<Record<string, unknown>> = [];
+      const knee = minAngle !== '' ? toKinexaKneeRange(Number(minAngle), Number(maxAngle), kneeAngleConvention) : null;
+      if (knee) params.push({ metric: 'knee_angle', side: 'either', phase: TARGET_PHASE, min_value: knee.min, max_value: knee.max, unit: 'deg', tolerance: 0, effective_from, version: 1 });
+      if (maxTrunkAngle !== '') params.push({ metric: 'trunk_lean', side: 'either', phase: 'at_peak', max_value: Number(maxTrunkAngle), unit: 'deg', tolerance: 0, effective_from, version: 1 });
+      if (maxAsymmetry !== '') params.push({ metric: 'asymmetry', side: 'either', phase: 'at_bottom', max_value: Number(maxAsymmetry), unit: 'deg', tolerance: 0, effective_from, version: 1 });
+      for (const parameter of params) {
+        const saved = await fetch(`${base}/${plan.id}/parameters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: plan.id, ...parameter }) });
+        if (!saved.ok) { const detail = await saved.json(); throw new Error(detail.detail || 'Could not save a therapist limit.'); }
+      }
+      setDatabaseMessage(`Saved ${params.length} therapist limit${params.length === 1 ? '' : 's'} to plan ${plan.id}.`);
+      setSavedPlanLoaded(true);
+    } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not save therapist plan.'); }
+  };
+
+  const saveLiveSession = async () => {
+    if (!patientId.trim() || !reps.length) return;
+    setSavingSession(true); setDatabaseMessage('Saving live session…');
+    try {
+      const correct = reps.filter((rep) => rep.verdict === 'within range').length;
+      const payload = {
+        patient_id: patientId.trim(), exercise: EXERCISE.id, model_version: reps.find((rep) => rep.model.version)?.model.version ?? `${EXERCISE.id}_browser_rules_v1`,
+        score: Math.round(correct / reps.length * 100), total_reps: reps.length, correct_reps: correct,
+        incorrect_reps: reps.filter((rep) => rep.verdict === 'outside range').length,
+        constraints_snapshot: { knee_range: prescribedKneeRange, max_trunk_lean: maxTrunkAngle === '' ? null : Number(maxTrunkAngle), max_asymmetry: maxAsymmetry === '' ? null : Number(maxAsymmetry) },
+        reps: reps.map((rep) => ({ rep: rep.number, status: rep.verdict === 'within range' ? 'correct' : rep.verdict === 'outside range' ? 'incorrect' : 'not_assessable', start_s: rep.start_s, bottom_s: rep.bottom_s, end_s: rep.end_s, measurements: Object.fromEntries(rep.measurements.map((item) => [`${item.metric}_${item.side}_${item.phase}`, { value: item.value, unit: item.unit }])), ml: rep.model, advice: rep.advice, issues: rep.advice })),
+      };
+      const response = await fetch('/api/backend/live-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not save live session.');
+      setDatabaseMessage(`Session saved (${result.analysis_id}); ${result.saved_reps} reps stored.`);
+    } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not save live session.'); }
+    finally { setSavingSession(false); }
+  };
 
   const stop = useCallback(() => {
     if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
@@ -410,16 +520,39 @@ export default function LiveSession() {
                     const cues = assessment.cues;
                     const number = ++repNumberRef.current;
                     const modelFeatures = assessment.modelFeatures;
+                    const bottomSample = samples.reduce((target, sample) => EXERCISE.descentDirection === 'decrease'
+                      ? (sample.primaryKnee < target.primaryKnee ? sample : target)
+                      : (sample.primaryKnee > target.primaryKnee ? sample : target));
+                    const measurements: Rep['measurements'] = [
+                      ...(bottomSample.leftKnee === null ? [] : [{ metric: 'knee_angle', side: 'left', phase: TARGET_PHASE, value: bottomSample.leftKnee, unit: 'deg' }]),
+                      ...(bottomSample.rightKnee === null ? [] : [{ metric: 'knee_angle', side: 'right', phase: TARGET_PHASE, value: bottomSample.rightKnee, unit: 'deg' }]),
+                      ...(asymmetry === null ? [] : [{ metric: 'asymmetry', side: 'either', phase: TARGET_PHASE, value: asymmetry, unit: 'deg' }]),
+                      ...(peakTrunkLean === null ? [] : [{ metric: 'trunk_lean', side: 'either', phase: 'at_peak', value: peakTrunkLean, unit: 'deg' }]),
+                    ];
+                    const sessionStartSeconds = (sessionStartTimeRef.current ?? now) / 1000;
                     setReps((old) => [...old, {
                       number, angle: Math.round(bottom), primaryLabel: assessment.primaryMetric.label, asymmetry, maxTrunkLean: peakTrunkLean, duration,
-                      verdict, cue: cues.join(' '), model: { status: 'checking' },
+                      verdict, cue: cues.join(' '), measurements, advice: [],
+                      start_s: Math.max(0, (samples[0]?.time ?? now / 1000) - sessionStartSeconds),
+                      bottom_s: Math.max(0, bottomSample.time - sessionStartSeconds),
+                      end_s: Math.max(0, now / 1000 - sessionStartSeconds),
+                      model: { status: 'checking' },
                     }]);
-                    const modelAssessment = kneeConfigured || EXERCISE.readiness === 'rules_only'
+                    if (patientId.trim() && savedPlanLoaded) {
+                      void requestPatientAdvice(EXERCISE.id, patientId.trim(), measurements).then((coaching) => {
+                        setReps((old) => old.map((rep) => rep.number === number ? {
+                          ...rep,
+                          advice: coaching.advice,
+                          cue: coaching.advice.length ? coaching.advice.map((item) => item.message).join(' ') : (coaching.personalized ? (coaching.message || cues.join(' ')) : cues.join(' ')),
+                        } : rep));
+                      }).catch((error: unknown) => {
+                        setDatabaseMessage(error instanceof Error ? error.message : 'Patient-specific advice is unavailable.');
+                      });
+                    }
+                    const modelAssessment = EXERCISE.readiness === 'rules_only'
                       ? Promise.resolve({
                           status: 'skipped' as const,
-                          reason: EXERCISE.readiness === 'rules_only'
-                            ? 'No quality model is trained for this exercise; feedback comes from its movement strategy and prescribed ROM.'
-                            : 'Generic model paused: it is not conditioned on this patient’s knee ROM. The prescribed ROM check above is used for depth.',
+                          reason: 'No quality model is trained for this exercise; feedback comes from its movement strategy and prescribed ROM.',
                         })
                       : requestExerciseModel(EXERCISE.id, modelFeatures);
                     void modelAssessment.then((model) => {
@@ -456,7 +589,7 @@ export default function LiveSession() {
       <section className="workspace">
         <div className="camera-column">
           <div className="camera-frame"><video ref={videoRef} muted playsInline/><canvas ref={canvasRef} className="pose-canvas"/>{!running && <div className="camera-placeholder"><div className="camera-mark">◎</div><b>Set up your camera</b><span>Position the camera at hip height, far enough away to show your full body.</span></div>}<div className="camera-badge"><i className={running ? 'pulse on' : 'pulse'}/>{running ? tracking : 'CAMERA PREVIEW'}</div>{angleNow !== null && <div className="angle-overlay"><span>{EXERCISE.angleLabel.toUpperCase()}</span><b>{angleNow}°</b></div>}</div>
-          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>{EXERCISE.cameraGuidance}</b></div><button className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button></div>
+          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>{EXERCISE.cameraGuidance}</b></div><div className="camera-button-stack"><button className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button>{!running && reps.length > 0 && <button className="button button-secondary" onClick={saveLiveSession} disabled={savingSession}>{savingSession ? 'Saving…' : 'Save session'}<span aria-hidden="true">↓</span></button>}</div></div>
           {error && <p className="error-banner" role="alert">{error}</p>}
           <div className="safety-note"><span>i</span><p>Keep a stable chair or support nearby. Stop if you feel pain, dizziness, or unusual discomfort.</p></div>
         </div>
@@ -483,17 +616,20 @@ export default function LiveSession() {
             </LineChart></ResponsiveContainer></div> : <p className="angle-chart-empty">Start the camera to see both knee angles move through the session.</p>}
           </section>
           <div className="rom-panel">
-            <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">LOCAL</span></div>
-            <p className="rom-copy">Set the therapist-prescribed knee range {EXERCISE.targetPositionLabel}. Kinexa uses an inside knee angle: 180° is straight, and smaller angles mean more bend. Flexion-from-straight values are converted automatically. Limits stay local to this browser.</p>
+            <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">POSTGRESQL</span></div>
+            <p className="rom-copy">Load or save this patient’s active therapist plan. Advice compares each rep’s measured values with the saved limits; the ML signal stays a separate general advisory.</p>
+            <div className="patient-plan-controls"><label>Patient ID<input value={patientId} disabled={running} onChange={(event) => { setPatientId(event.target.value); setSavedPlanLoaded(false); setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry(''); }} placeholder="Existing patient ID"/></label><div><button type="button" onClick={loadPatientPlan} disabled={running}>Load plan</button><button type="button" onClick={savePatientPlan} disabled={running}>Save as plan</button></div></div>
+            <details className="new-patient"><summary>Create a patient record</summary><div><input value={therapistId} disabled={running} onChange={(event) => setTherapistId(event.target.value)} placeholder="Therapist ID"/><input value={newPatientName} disabled={running} onChange={(event) => setNewPatientName(event.target.value)} placeholder="Patient name"/><button type="button" onClick={createPatient} disabled={running}>Create patient</button></div></details>
+            {databaseMessage && <p className="database-message" role="status">{databaseMessage}</p>}
             <div className="range-inputs">
-              <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => setKneeAngleConvention(e.target.value as KneeAngleConvention)}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
-              <label>Minimum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => setMinAngle(e.target.value)}/>°</span></label>
-              <label>Maximum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 75' : 'e.g. 130'} value={maxAngle} disabled={running} onChange={(e) => setMaxAngle(e.target.value)}/>°</span></label>
-              <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => setMaxTrunkAngle(e.target.value)}/>°</span></label>
-              <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => setMaxAsymmetry(e.target.value)}/>°</span></label>
+              <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => { setKneeAngleConvention(e.target.value as KneeAngleConvention); setSavedPlanLoaded(false); }}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
+              <label>Minimum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => { setMinAngle(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>
+              <label>Maximum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 75' : 'e.g. 130'} value={maxAngle} disabled={running} onChange={(e) => { setMaxAngle(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>
+              <label>Maximum trunk lean <span><input type="number" min="0" max="90" placeholder="optional" value={maxTrunkAngle} disabled={running} onChange={(e) => { setMaxTrunkAngle(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>
+              <label>Maximum asymmetry <span><input type="number" min="0" max="90" placeholder="optional" value={maxAsymmetry} disabled={running} onChange={(e) => { setMaxAsymmetry(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>
               <label>Minimum knee movement <span><input type="number" min={DETECTOR.minimumUserMovementDegrees} max={DETECTOR.maximumUserMovementDegrees} value={minRepMovement} disabled={running} onChange={(e) => setMinRepMovement(e.target.value)}/>°</span></label>
             </div>
-            <p className="local-hint">If the prescription says flexion from straight, choose that format; for example, 50°–75° flexion becomes a 105°–130° inside-angle range. Minimum movement (default {DETECTOR.minRepMovementDegrees}°) is separate from ROM. Patient plans are not connected yet.</p>
+            <p className="local-hint">If the prescription says flexion from straight, choose that format; for example, 50°–75° flexion becomes a 105°–130° inside-angle range. Minimum movement (default {DETECTOR.minRepMovementDegrees}°) is separate from ROM. {savedPlanLoaded ? 'Using the saved plan for personalized advice.' : 'Save or reload the plan before using patient-specific advice.'}</p>
           </div>
           <div className="rep-list"><div className="list-head"><h3>Recent reps</h3><span>{reps.length ? `${reps.length} recorded` : 'No reps yet'}</span></div>{latest ? <div className="rep-item"><span className="rep-number">{String(latest.number).padStart(2, '0')}</span><div><b>{latest.primaryLabel} · {latest.angle}°{latest.maxTrunkLean === null ? '' : ` · trunk ${latest.maxTrunkLean}°`}{latest.asymmetry === null ? '' : ` · asymmetry ${latest.asymmetry}°`}</b><small>{latest.duration.toFixed(1)} s · {latest.cue}</small><small className="model-note">{describeModelAssessment(latest.model)}</small></div><span className={`verdict ${latest.verdict === 'within range' ? 'pass' : latest.verdict === 'not assessable' ? 'unassessable' : 'pending'}`}>{latest.verdict === 'within range' ? 'LIMITS OK' : latest.verdict === 'range not set' ? 'SET ROM' : latest.verdict === 'not assessable' ? 'NOT ASSESSABLE' : 'REVIEW'}</span></div> : <p className="empty-reps">Your completed reps and cues will appear here.</p>}</div>
           <details className="detector-log">

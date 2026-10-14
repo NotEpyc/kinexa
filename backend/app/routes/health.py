@@ -1,10 +1,13 @@
 """Health check endpoints."""
 
 import os
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from fastapi import APIRouter
 from app.features.registry import get_feature_schema
 from app.models.loader import get_model_loader
+from app.db import engine
 
 router = APIRouter()
 
@@ -22,8 +25,15 @@ async def health_check():
     configured_model = os.getenv("KINEXA_QUALITY_MODEL", "").strip() or default_model
     loader.load(configured_model)
     model = loader.metadata if loader.is_loaded else None
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+        database = "connected"
+    except SQLAlchemyError:
+        database = "unavailable"
     return {
-        "status": "healthy",
+        "status": "healthy" if database == "connected" else "degraded",
+        "database": database,
         "model_version": model.version if model else f"{active_exercise}_rules_v0",
         "quality_model_loaded": model is not None,
         "quality_model_exercise": model.exercise if model else None,
