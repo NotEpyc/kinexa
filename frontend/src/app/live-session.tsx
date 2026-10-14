@@ -173,6 +173,7 @@ export default function LiveSession() {
   const [newPatientEmail, setNewPatientEmail] = useState('');
   const [newPatientPassword, setNewPatientPassword] = useState('');
   const [databaseMessage, setDatabaseMessage] = useState('');
+  const [sessionSaveMessage, setSessionSaveMessage] = useState('');
   const [savingSession, setSavingSession] = useState(false);
   const [savedPlanLoaded, setSavedPlanLoaded] = useState(false);
   const [detectorLogs, setDetectorLogs] = useState<DetectorLog[]>([]);
@@ -341,14 +342,14 @@ export default function LiveSession() {
 
   const saveLiveSession = async () => {
     if (!patientId.trim()) {
-      setDatabaseMessage('Choose a patient above before saving this session.');
+      setSessionSaveMessage('Choose a patient in the Therapist-set ROM panel before saving.');
       return;
     }
     if (!reps.length) {
-      setDatabaseMessage('There are no completed reps to save yet.');
+      setSessionSaveMessage('There are no completed reps to save yet.');
       return;
     }
-    setSavingSession(true); setDatabaseMessage('Saving live session…');
+    setSavingSession(true); setSessionSaveMessage('Saving session to PostgreSQL…');
     try {
       const correct = reps.filter((rep) => rep.verdict === 'within range').length;
       const payload = {
@@ -361,9 +362,9 @@ export default function LiveSession() {
       const response = await authenticatedFetch('/api/backend/live-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Could not save live session.');
-      setDatabaseMessage(`Session saved (${result.analysis_id}); ${result.saved_reps} reps stored.`);
+      setSessionSaveMessage(`Session saved; ${result.saved_reps} reps stored.`);
       void loadPatientHistory();
-    } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not save live session.'); }
+    } catch (error) { setSessionSaveMessage(error instanceof Error ? error.message : 'Could not save live session.'); }
     finally { setSavingSession(false); }
   };
 
@@ -387,7 +388,7 @@ export default function LiveSession() {
   }, []);
 
   const start = async () => {
-    setError(''); setLoading(true);
+    setError(''); setSessionSaveMessage(''); setLoading(true);
     try {
       const min = minAngle === '' ? null : Number(minAngle);
       const max = maxAngle === '' ? null : Number(maxAngle);
@@ -653,7 +654,8 @@ export default function LiveSession() {
       <section className="workspace">
         <div className="camera-column">
           <div className="camera-frame"><video ref={videoRef} muted playsInline/><canvas ref={canvasRef} className="pose-canvas"/>{!running && <div className="camera-placeholder"><div className="camera-mark">◎</div><b>Set up your camera</b><span>Position the camera at hip height, far enough away to show your full body.</span></div>}<div className="camera-badge"><i className={running ? 'pulse on' : 'pulse'}/>{running ? tracking : 'CAMERA PREVIEW'}</div>{angleNow !== null && <div className="angle-overlay"><span>{EXERCISE.angleLabel.toUpperCase()}</span><b>{angleNow}°</b></div>}</div>
-          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>{EXERCISE.cameraGuidance}</b></div><div className="camera-button-stack"><button className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button>{!running && reps.length > 0 && <button className="button button-secondary" onClick={saveLiveSession} disabled={savingSession}>{savingSession ? 'Saving…' : 'Save session'}<span aria-hidden="true">↓</span></button>}</div></div>
+          <div className="camera-actions"><div><span className="micro-label">CAMERA POSITION</span><b>{EXERCISE.cameraGuidance}</b></div><div className="camera-button-stack"><button type="button" className={running ? 'button button-stop' : 'button'} onClick={running ? stop : start} disabled={loading}>{loading ? 'Preparing camera…' : running ? 'End session' : 'Start live session'}<span aria-hidden="true">{running ? '×' : '↗'}</span></button>{!running && reps.length > 0 && <button type="button" className="button button-secondary" onClick={saveLiveSession} disabled={savingSession}>{savingSession ? 'Saving…' : 'Save session'}<span aria-hidden="true">↓</span></button>}</div></div>
+          {sessionSaveMessage && <p className="session-save-message" role="status" aria-live="polite">{sessionSaveMessage}</p>}
           {error && <p className="error-banner" role="alert">{error}</p>}
           <div className="safety-note"><span>i</span><p>Keep a stable chair or support nearby. Stop if you feel pain, dizziness, or unusual discomfort.</p></div>
         </div>
