@@ -101,10 +101,12 @@ The `patient_exercise_parameters` table is the editable ROM source read by the E
 - **Roles:** therapist, patient, admin
 - **Therapist:** sees only their own patients
 - **Patient:** sees only their own data
-- **All endpoints:** auth required; role-based access
+- **Protected endpoints:** signed JWT authentication; therapist-owned patient records and patient-self access are enforced
+- **Public endpoints:** health and model readiness/inference contain no patient data
+- **Current prototype limits:** therapist self-registration and therapist-created patient accounts are supported; admin accounts, email verification, password recovery, and production security review are not implemented
 
 ## Important Notes
-- This repo is at the PRD stage — no production code exists yet. The AGENTS.md will need updating once the codebase is initialized.
+- This repository contains a working prototype; requirements below remain the intended direction and do not imply production readiness.
 - The PRD is the source of truth for requirements; code should align with §6–§10 above.
 - v1 is squat-only; plan for pluggable exercise modules per design principle #3.
 - Privacy: health video is sensitive — consent, encryption, retention policy, user data deletion on request (PRD §12).

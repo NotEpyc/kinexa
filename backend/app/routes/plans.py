@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db import ExercisePlan, Patient, PatientExerciseParameter, get_db
+from app.db import ExercisePlan, Patient, PatientExerciseParameter, User, get_db
+from app.security import require_owned_patient, require_patient_access, require_therapist, get_current_user
 
 router = APIRouter()
 
@@ -29,11 +30,10 @@ class PlanResponse(BaseModel):
 
 
 @router.post("/patients/{patient_id}/plans", response_model=PlanResponse, status_code=201)
-def create_plan(patient_id: str, plan: PlanCreate, db: Session = Depends(get_db)):
+def create_plan(patient_id: str, plan: PlanCreate, db: Session = Depends(get_db), user: User = Depends(require_therapist)):
     if plan.patient_id != patient_id:
         raise HTTPException(status_code=400, detail="patient_id mismatch")
-    if db.get(Patient, patient_id) is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    require_owned_patient(patient_id, user, db)
     if plan.active:
         for previous in db.scalars(select(ExercisePlan).where(
             ExercisePlan.patient_id == patient_id,
@@ -49,9 +49,8 @@ def create_plan(patient_id: str, plan: PlanCreate, db: Session = Depends(get_db)
 
 
 @router.get("/patients/{patient_id}/plans", response_model=list[PlanResponse])
-def list_plans(patient_id: str, db: Session = Depends(get_db)):
-    if db.get(Patient, patient_id) is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+def list_plans(patient_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    require_patient_access(patient_id, user, db)
     return list(db.scalars(select(ExercisePlan).where(
         ExercisePlan.patient_id == patient_id
     ).order_by(ExercisePlan.created_at.desc())))
@@ -102,7 +101,11 @@ class ParameterResponse(BaseModel):
     version: int
 
 
-def _owned_plan(patient_id: str, plan_id: str, db: Session) -> ExercisePlan:
+def _owned_plan(patient_id: str, plan_id: str, db: Session, user: User, read_only: bool = False) -> ExercisePlan:
+    if read_only:
+        require_patient_access(patient_id, user, db)
+    else:
+        require_owned_patient(patient_id, user, db)
     plan = db.scalar(select(ExercisePlan).where(
         ExercisePlan.id == plan_id, ExercisePlan.patient_id == patient_id
     ))
@@ -112,8 +115,8 @@ def _owned_plan(patient_id: str, plan_id: str, db: Session) -> ExercisePlan:
 
 
 @router.post("/patients/{patient_id}/plans/{plan_id}/parameters", response_model=ParameterResponse, status_code=201)
-def create_parameter(patient_id: str, plan_id: str, param: ParameterCreate, db: Session = Depends(get_db)):
-    _owned_plan(patient_id, plan_id, db)
+def create_parameter(patient_id: str, plan_id: str, param: ParameterCreate, db: Session = Depends(get_db), user: User = Depends(require_therapist)):
+    _owned_plan(patient_id, plan_id, db, user)
     if param.plan_id != plan_id:
         raise HTTPException(status_code=400, detail="plan_id mismatch")
     values = param.model_dump(exclude={"plan_id"})
@@ -126,16 +129,16 @@ def create_parameter(patient_id: str, plan_id: str, param: ParameterCreate, db: 
 
 
 @router.get("/patients/{patient_id}/plans/{plan_id}/parameters", response_model=list[ParameterResponse])
-def list_parameters(patient_id: str, plan_id: str, db: Session = Depends(get_db)):
-    _owned_plan(patient_id, plan_id, db)
+def list_parameters(patient_id: str, plan_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    _owned_plan(patient_id, plan_id, db, user, read_only=True)
     return list(db.scalars(select(PatientExerciseParameter).where(
         PatientExerciseParameter.plan_id == plan_id
     ).order_by(PatientExerciseParameter.metric, PatientExerciseParameter.side, PatientExerciseParameter.effective_from)))
 
 
 @router.put("/patients/{patient_id}/plans/{plan_id}/parameters/{param_id}", response_model=ParameterResponse)
-def update_parameter(patient_id: str, plan_id: str, param_id: str, param: ParameterUpdate, db: Session = Depends(get_db)):
-    _owned_plan(patient_id, plan_id, db)
+def update_parameter(patient_id: str, plan_id: str, param_id: str, param: ParameterUpdate, db: Session = Depends(get_db), user: User = Depends(require_therapist)):
+    _owned_plan(patient_id, plan_id, db, user)
     current = db.scalar(select(PatientExerciseParameter).where(
         PatientExerciseParameter.id == param_id,
         PatientExerciseParameter.plan_id == plan_id,

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.routes import analyze, patients, plans, health, quality
+from app.routes import analyze, patients, plans, health, quality, auth
 from app.db import Base, engine
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ if model_dir.is_dir():
 
 # Routers
 app.include_router(health.router, prefix="/api", tags=["health"])
+app.include_router(auth.router, prefix="/api", tags=["authentication"])
 app.include_router(analyze.router, prefix="/api", tags=["analyze"])
 app.include_router(patients.router, prefix="/api", tags=["patients"])
 app.include_router(plans.router, prefix="/api", tags=["plans"])

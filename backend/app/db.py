@@ -43,6 +43,20 @@ class Patient(Base):
     analyses: Mapped[list["Analysis"]] = relationship(back_populates="patient")
 
 
+class User(Base):
+    """Login account; therapist_id ownership uses this account's stable ID."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    role: Mapped[str] = mapped_column(String(20), default="therapist")
+    password_hash: Mapped[str] = mapped_column(String(256))
+    patient_id: Mapped[str | None] = mapped_column(ForeignKey("patients.id", ondelete="CASCADE"), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ExercisePlan(Base):
     __tablename__ = "exercise_plans"
 

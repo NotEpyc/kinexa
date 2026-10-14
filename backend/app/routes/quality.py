@@ -11,9 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.advice import personalized_advice
-from app.db import ExercisePlan, Patient, PatientExerciseParameter, get_db
+from app.db import ExercisePlan, Patient, PatientExerciseParameter, User, get_db
 from app.features.registry import EXERCISE_FEATURE_SCHEMAS, get_feature_schema
 from app.models.loader import get_model_loader
+from app.security import require_patient_access, get_current_user
 
 router = APIRouter()
 
@@ -128,10 +129,9 @@ async def assess_quality(request: QualityAssessmentRequest) -> dict[str, Any]:
 
 
 @router.post("/quality/coach")
-def coach_rep(request: CoachRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+def coach_rep(request: CoachRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> dict[str, Any]:
     """Return targeted cues from the patient's active therapist plan."""
-    if db.get(Patient, request.patient_id) is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    require_patient_access(request.patient_id, user, db)
     plan = db.scalar(select(ExercisePlan).where(
         ExercisePlan.patient_id == request.patient_id,
         ExercisePlan.exercise == request.exercise,

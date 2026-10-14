@@ -7,7 +7,7 @@
 - **Git**
 - **Windows/Linux/macOS**
 
-PostgreSQL is used for patient profiles, therapist plans and limits, uploaded analyses, and saved live sessions. Install PostgreSQL and create a database named `kinexa` before using those features. The camera-only experience can still start without PostgreSQL, but persistence endpoints will report that the database is unavailable. The repo includes a safe `.env.example`; copy it to `.env` and add your own database credentials before starting the backend.
+PostgreSQL is used for therapist and patient accounts, patient profiles, therapist plans and limits, uploaded analyses, and saved live sessions. Install PostgreSQL and create a database named `kinexa` before using the signed-in app. The repo includes a safe `.env.example`; copy it to `.env`, set your database credentials, and replace the JWT signing-secret placeholder before starting the backend.
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ npm run dev
 
 Open **http://localhost:3000** and allow camera access. Live squat feedback runs in the browser. It requires `backend/models/pose_landmarker_full.task`; this file is ignored by Git, so obtain the MediaPipe Pose Landmarker Full model bundle from the [official MediaPipe guide](https://developers.google.com/mediapipe/solutions/vision/pose_landmarker) and save it at that path. The browser also downloads MediaPipe WASM assets from jsDelivr, so it needs network access on first load.
 
-### Optional: start the FastAPI backend
+### Start the FastAPI backend
 
 For database-backed features, complete [PostgreSQL Setup](#postgresql-setup) first. The backend loads `DATABASE_URL` from the repository-root `.env`, including when Uvicorn is started from `backend/`.
 
@@ -62,7 +62,17 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-Open `.env` and replace `YOUR_POSTGRES_PASSWORD` with the password for your PostgreSQL user. Keep `.env` private; Git ignores it. The checked-in `.env.example` contains placeholders only. If your password includes URL-reserved characters such as `@`, `:`, `/`, or `#`, URL-encode those characters in the connection string.
+Open `.env` and replace `YOUR_POSTGRES_PASSWORD` with the password for your PostgreSQL user. Generate a JWT key with PowerShell:
+
+```powershell
+$rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+$bytes = New-Object byte[] 32
+$rng.GetBytes($bytes)
+[BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+$rng.Dispose()
+```
+
+Copy the resulting 64-character value into `AUTH_SECRET_KEY`. Keep `.env` private; Git ignores it. The checked-in `.env.example` contains placeholders only. If your database password includes URL-reserved characters such as `@`, `:`, `/`, or `#`, URL-encode those characters in the connection string.
 
 The connection string format is:
 
@@ -82,12 +92,14 @@ python -m uvicorn app.main:app --reload
 
 On macOS/Linux, activate the virtual environment with `source .venv/bin/activate` instead of the PowerShell activation command shown in Quick Start. If the backend environment does not exist yet, create and activate it using the Quick Start instructions before installing requirements.
 
-5. Open `http://localhost:8000/api/health`. Confirm the database status is `connected`. API docs are at `http://localhost:8000/docs`. The backend creates the application tables at startup; you do not need to run SQL scripts manually.
-6. Create a patient on the live page under **Create a patient record**, or through `POST /api/patients`. Enter the returned patient ID, set therapist ranges, and choose **Save as plan**. **Load plan** restores saved limits. After a live session, choose **Save session** to store its reps and results.
+5. Open `http://localhost:8000/api/health`. Confirm the database status is `connected`. API docs are at `http://localhost:8000/docs`. The backend creates new tables at startup, including `users`; you do not need to run SQL scripts manually.
+6. Open the frontend and create a therapist account, or sign in. Use a password with at least 12 characters. After sign-in, create a patient under **Create a patient record**. Optionally provide a patient email and temporary password (12+ characters) to create a patient login. The therapist account can then set limits, choose **Save as plan**, and **Load plan**. After a live session, choose **Save session** to store its reps and results.
 
-For a new patient through the API, use `POST /api/patients` with JSON such as `{"therapist_id":"therapist-1","name":"Example patient"}`. Patient IDs are UUIDs. The database stores profile fields, plan parameter versions, per-rep measurements/advice/model output, result history, and a constraints snapshot for each analysis. Uploaded videos are processed temporarily and removed; no video bytes are retained.
+JWT access tokens expire after 30 minutes and are held in an HttpOnly, same-site cookie. Sign in again after expiry. The therapist registration endpoint is open for this local prototype; email verification, password reset, invitation-only registration, and administrator accounts are not implemented. Patient accounts are created by their therapist. Existing patient rows whose `therapist_id` was a manually entered label are not automatically assigned to a new therapist account; have a database administrator verify and migrate those ownership values before using the records.
 
-The personalized cue layer compares measured rep values with the active patient plan and reports the value, limit, and reason. The Random Forest remains a general research advisory: it has not been fine-tuned per patient and does not generate clinical advice. Authentication and role-based access are not implemented yet, so this local prototype must not be exposed to real patient data over a network.
+For a new patient through the API, sign in and call `POST /api/patients` with JSON such as `{"name":"Example patient"}`. The authenticated therapist account becomes the record owner; do not submit a therapist ID. Patient IDs are UUIDs. A therapist can create patient credentials with `POST /api/patients/{patient_id}/account` and JSON containing an email and initial password. The database stores profile fields, plan parameter versions, per-rep measurements/advice/model output, result history, and a constraints snapshot for each analysis. Uploaded videos are processed temporarily and removed; no video bytes are retained.
+
+The personalized cue layer compares measured rep values with the active patient plan and reports the value, limit, and reason. The Random Forest remains a general research advisory: it has not been fine-tuned per patient and does not generate clinical advice. Therapist and patient JWT sign-in and basic record ownership checks are implemented for the prototype; email verification, recovery, admin workflows, audit logging, and production security review remain outstanding. Do not expose this prototype to real patient data over a network.
 
 ## Datasets
 
@@ -241,6 +253,8 @@ kinexa/
 | Issue | Solution |
 |-------|----------|
 | `database: unavailable` | Confirm the PostgreSQL service is running, the `kinexa` database exists, and root `.env` has a valid `DATABASE_URL`; restart Uvicorn after changing `.env` |
+| `Authentication is not configured` | Replace the `AUTH_SECRET_KEY` placeholder in root `.env` with a newly generated random key of at least 32 characters, then restart Uvicorn |
+| `401 Authentication required` | Sign in again; JWT cookies expire after 30 minutes |
 | `password authentication failed` | Check the PostgreSQL username/password in `.env`; URL-encode reserved password characters |
 | `connection refused` | Start the PostgreSQL service and confirm the host/port (`localhost:5432`) in `.env` |
 | `Microsoft Visual C++ 14.0 required` | Install [VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) or use `--only-binary :all:` |
@@ -261,9 +275,9 @@ All dependencies pinned to versions with Python 3.13 wheels:
 | **A** | ✅ | Research, datasets, MediaPipe validation |
 | **B** | ✅ | Rules-first pipeline (rules → ML) |
 | **C** | 🔄 | Squat Random Forest trained with subject-grouped validation; live-camera validation remains |
-| **D** | 🔄 | Exercise-registry upload API and per-rep quality inference; persistence/auth remain |
+| **D** | 🔄 | Exercise-registry upload API and per-rep quality inference; auth administration remains |
 | **E** | 🔄 | Live browser squat feedback sends per-rep features to the model; therapist ROM remains authoritative |
-| **F** | 🔄 | PostgreSQL persistence and analysis history implemented; authentication remains |
+| **F** | 🔄 | PostgreSQL persistence, therapist/patient JWT sign-in, and basic ownership checks implemented; admin and account recovery remain |
 | **G** | ⏳ | Subject-independent and physiotherapist validation |
 
 ## License

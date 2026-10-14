@@ -14,9 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.exercises.registry import get_exercise, supported_exercises
 from app.models.loader import get_model_loader
-from app.db import Analysis, ExercisePlan, Patient, PatientExerciseParameter, RepResultRecord, get_db
+from app.db import Analysis, ExercisePlan, Patient, PatientExerciseParameter, RepResultRecord, User, get_db
 from app.advice import personalized_advice
 from app.rules.engine import Metric, Parameter, Phase, Side
+from app.security import require_patient_access, get_current_user
 
 router = APIRouter()
 
@@ -57,6 +58,7 @@ async def analyze_video(
     patient_id: str = Form(...),
     exercise: str = Form("squat"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Upload video + patient_id + exercise; returns per-rep analysis.
@@ -85,9 +87,7 @@ async def analyze_video(
     )
 
     try:
-        patient = db.get(Patient, patient_id)
-        if patient is None:
-            raise HTTPException(status_code=404, detail="Patient not found; create the patient before analyzing a video.")
+        require_patient_access(patient_id, user, db)
         total_size = 0
         with open(temp_path, "wb") as temp_file:
             while True:
@@ -320,19 +320,19 @@ def _analysis_json(record: Analysis) -> dict:
 
 
 @router.get("/analyses/{analysis_id}")
-def get_analysis(analysis_id: str, db: Session = Depends(get_db)):
+def get_analysis(analysis_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Fetch a stored analysis and its rep-level results."""
     record = db.get(Analysis, analysis_id)
     if record is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
+    require_patient_access(record.patient_id, user, db)
     return _analysis_json(record)
 
 
 @router.get("/patients/{patient_id}/analyses")
-def get_patient_analyses(patient_id: str, db: Session = Depends(get_db)):
+def get_patient_analyses(patient_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Return stored upload and live-session history for a patient."""
-    if db.get(Patient, patient_id) is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    require_patient_access(patient_id, user, db)
     records = db.scalars(select(Analysis).where(Analysis.patient_id == patient_id).order_by(Analysis.created_at.desc()))
     return [_analysis_json(record) for record in records]
 
@@ -362,10 +362,8 @@ class LiveSessionInput(BaseModel):
 
 
 @router.post("/live-sessions", status_code=201)
-def save_live_session(request: LiveSessionInput, db: Session = Depends(get_db)):
-    patient = db.get(Patient, request.patient_id)
-    if patient is None:
-        raise HTTPException(status_code=404, detail="Patient not found")
+def save_live_session(request: LiveSessionInput, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    require_patient_access(request.patient_id, user, db)
     plan = db.scalar(select(ExercisePlan).where(
         ExercisePlan.patient_id == request.patient_id,
         ExercisePlan.exercise == request.exercise,

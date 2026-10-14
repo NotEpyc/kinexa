@@ -24,6 +24,11 @@ type Rep = {
   end_s: number;
   model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
+
+async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  return fetch(input, { ...init, headers, credentials: 'same-origin' });
+}
 type RepSample = KneeAngleSample;
 type AngleHistoryPoint = { seconds: number; leftKnee: number | null; rightKnee: number | null };
 type DetectorLog = {
@@ -102,7 +107,7 @@ async function requestExerciseModel(exercise: string, features: Record<string, n
 }
 
 async function requestPatientAdvice(exercise: string, patientId: string, measurements: Rep['measurements']) {
-  const response = await fetch('/api/backend/quality/coach', {
+  const response = await authenticatedFetch('/api/backend/quality/coach', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ exercise, patient_id: patientId, measurements }), cache: 'no-store',
   });
@@ -154,8 +159,9 @@ export default function LiveSession() {
   const [readinessReason, setReadinessReason] = useState(EXERCISE.readinessMessage);
   const [reps, setReps] = useState<Rep[]>([]);
   const [patientId, setPatientId] = useState('');
-  const [therapistId, setTherapistId] = useState('');
   const [newPatientName, setNewPatientName] = useState('');
+  const [newPatientEmail, setNewPatientEmail] = useState('');
+  const [newPatientPassword, setNewPatientPassword] = useState('');
   const [databaseMessage, setDatabaseMessage] = useState('');
   const [savingSession, setSavingSession] = useState(false);
   const [savedPlanLoaded, setSavedPlanLoaded] = useState(false);
@@ -222,12 +228,12 @@ export default function LiveSession() {
     setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry('');
     setDatabaseMessage('Loading saved therapist plan…');
     try {
-      const response = await fetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans`, { cache: 'no-store' });
+      const response = await authenticatedFetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans`, { cache: 'no-store' });
       const plans = await response.json();
       if (!response.ok) throw new Error(plans.detail || 'Could not load patient plans.');
       const plan = plans.find((item: { exercise: string; active: boolean }) => item.exercise === EXERCISE.id && item.active);
       if (!plan) { setSavedPlanLoaded(false); setDatabaseMessage(`No active ${EXERCISE.label} plan for this patient. Set the range and save it as a plan.`); return; }
-      const paramsResponse = await fetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans/${plan.id}/parameters`, { cache: 'no-store' });
+      const paramsResponse = await authenticatedFetch(`/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans/${plan.id}/parameters`, { cache: 'no-store' });
       const parameters = await paramsResponse.json();
       if (!paramsResponse.ok) throw new Error(parameters.detail || 'Could not load plan limits.');
       const current = parameters.filter((item: { effective_to: string | null }) => !item.effective_to);
@@ -248,14 +254,23 @@ export default function LiveSession() {
   };
 
   const createPatient = async () => {
-    if (!therapistId.trim() || !newPatientName.trim()) { setDatabaseMessage('Enter a therapist ID and patient name to create a patient record.'); return; }
+    if (!newPatientName.trim()) { setDatabaseMessage('Enter a patient name to create a patient record.'); return; }
+    if ((newPatientEmail.trim() || newPatientPassword) && (!newPatientEmail.trim() || newPatientPassword.length < 12)) { setDatabaseMessage('To create a patient login, provide an email and a password of at least 12 characters.'); return; }
     try {
-      const response = await fetch('/api/backend/patients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ therapist_id: therapistId.trim(), name: newPatientName.trim() }) });
+      const response = await authenticatedFetch('/api/backend/patients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newPatientName.trim() }) });
       const patient = await response.json();
       if (!response.ok) throw new Error(patient.detail || 'Could not create patient.');
       setPatientId(patient.id);
       setSavedPlanLoaded(false);
-      setDatabaseMessage(`Patient saved. Their ID is ${patient.id}; you can now save a therapist plan.`);
+      if (newPatientEmail.trim()) {
+        const accountResponse = await authenticatedFetch(`/api/backend/patients/${encodeURIComponent(patient.id)}/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: newPatientEmail.trim(), password: newPatientPassword }) });
+        const accountResult = await accountResponse.json();
+        if (!accountResponse.ok) throw new Error(accountResult.detail || 'Patient saved, but login account creation failed.');
+        setDatabaseMessage(`Patient and login saved for ${newPatientEmail.trim()}. Set their exercise plan below.`);
+        setNewPatientPassword('');
+      } else {
+        setDatabaseMessage(`Patient saved. Their ID is ${patient.id}; you can now save a therapist plan.`);
+      }
     } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not create patient.'); }
   };
 
@@ -265,7 +280,7 @@ export default function LiveSession() {
     setDatabaseMessage('Saving therapist plan…');
     try {
       const base = `/api/backend/patients/${encodeURIComponent(patientId.trim())}/plans`;
-      const planResponse = await fetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patient_id: patientId.trim(), exercise: EXERCISE.id, active: true }) });
+      const planResponse = await authenticatedFetch(base, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ patient_id: patientId.trim(), exercise: EXERCISE.id, active: true }) });
       const plan = await planResponse.json();
       if (!planResponse.ok) throw new Error(plan.detail || 'Could not create the exercise plan.');
       const effective_from = new Date().toISOString();
@@ -275,7 +290,7 @@ export default function LiveSession() {
       if (maxTrunkAngle !== '') params.push({ metric: 'trunk_lean', side: 'either', phase: 'at_peak', max_value: Number(maxTrunkAngle), unit: 'deg', tolerance: 0, effective_from, version: 1 });
       if (maxAsymmetry !== '') params.push({ metric: 'asymmetry', side: 'either', phase: 'at_bottom', max_value: Number(maxAsymmetry), unit: 'deg', tolerance: 0, effective_from, version: 1 });
       for (const parameter of params) {
-        const saved = await fetch(`${base}/${plan.id}/parameters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: plan.id, ...parameter }) });
+        const saved = await authenticatedFetch(`${base}/${plan.id}/parameters`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan_id: plan.id, ...parameter }) });
         if (!saved.ok) { const detail = await saved.json(); throw new Error(detail.detail || 'Could not save a therapist limit.'); }
       }
       setDatabaseMessage(`Saved ${params.length} therapist limit${params.length === 1 ? '' : 's'} to plan ${plan.id}.`);
@@ -295,7 +310,7 @@ export default function LiveSession() {
         constraints_snapshot: { knee_range: prescribedKneeRange, max_trunk_lean: maxTrunkAngle === '' ? null : Number(maxTrunkAngle), max_asymmetry: maxAsymmetry === '' ? null : Number(maxAsymmetry) },
         reps: reps.map((rep) => ({ rep: rep.number, status: rep.verdict === 'within range' ? 'correct' : rep.verdict === 'outside range' ? 'incorrect' : 'not_assessable', start_s: rep.start_s, bottom_s: rep.bottom_s, end_s: rep.end_s, measurements: Object.fromEntries(rep.measurements.map((item) => [`${item.metric}_${item.side}_${item.phase}`, { value: item.value, unit: item.unit }])), ml: rep.model, advice: rep.advice, issues: rep.advice })),
       };
-      const response = await fetch('/api/backend/live-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const response = await authenticatedFetch('/api/backend/live-sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Could not save live session.');
       setDatabaseMessage(`Session saved (${result.analysis_id}); ${result.saved_reps} reps stored.`);
@@ -619,7 +634,7 @@ export default function LiveSession() {
             <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">POSTGRESQL</span></div>
             <p className="rom-copy">Load or save this patient’s active therapist plan. Advice compares each rep’s measured values with the saved limits; the ML signal stays a separate general advisory.</p>
             <div className="patient-plan-controls"><label>Patient ID<input value={patientId} disabled={running} onChange={(event) => { setPatientId(event.target.value); setSavedPlanLoaded(false); setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry(''); }} placeholder="Existing patient ID"/></label><div><button type="button" onClick={loadPatientPlan} disabled={running}>Load plan</button><button type="button" onClick={savePatientPlan} disabled={running}>Save as plan</button></div></div>
-            <details className="new-patient"><summary>Create a patient record</summary><div><input value={therapistId} disabled={running} onChange={(event) => setTherapistId(event.target.value)} placeholder="Therapist ID"/><input value={newPatientName} disabled={running} onChange={(event) => setNewPatientName(event.target.value)} placeholder="Patient name"/><button type="button" onClick={createPatient} disabled={running}>Create patient</button></div></details>
+            <details className="new-patient"><summary>Create a patient record and optional login</summary><div><input value={newPatientName} disabled={running} onChange={(event) => setNewPatientName(event.target.value)} placeholder="Patient name"/><input type="email" value={newPatientEmail} disabled={running} onChange={(event) => setNewPatientEmail(event.target.value)} placeholder="Patient email (optional)"/><input type="password" value={newPatientPassword} disabled={running} onChange={(event) => setNewPatientPassword(event.target.value)} placeholder="Temporary password (12+ chars)"/><button type="button" onClick={createPatient} disabled={running}>Create patient</button></div></details>
             {databaseMessage && <p className="database-message" role="status">{databaseMessage}</p>}
             <div className="range-inputs">
               <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => { setKneeAngleConvention(e.target.value as KneeAngleConvention); setSavedPlanLoaded(false); }}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>

@@ -6,7 +6,7 @@ An AI-powered platform where physiotherapists define patient-specific exercise l
 
 The frontend supports a browser-camera live squat session using MediaPipe Pose Landmarker. It smooths the live knee-angle signal, detects completed reps, and summarizes bottom knee angle, trunk lean, knee asymmetry, and rep duration, with a rolling two-knee angle graph, prescribed ROM band, and counted-rep markers during the session. Rep detection uses a separate minimum knee-movement setting (20° by default), a minimum cycle duration, and minimum rep spacing so custom ROM limits cannot make tiny movements count as reps. Both knee angles must be available at the rep start and during movement, and each knee must travel at least half the configured minimum movement (at least 10°), and the weaker knee must reach at least 35% of the stronger knee travel, so strongly one-sided movement is rejected. Low-confidence knee traces are omitted. The graph labels anatomical sides and notes that the camera preview is mirrored. An expandable detector log shows left/right travel, thresholds, duration, and whether each attempted cycle was counted or rejected; the same events go to the browser console. Therapist limits can be saved to PostgreSQL patient plans; each live rep can receive a cue tied to the active plan and measured values. Per-rep features (never camera frames) can also be sent to the backend quality model for a separate general research advisory; therapist ROM rules remain authoritative. The `.task` pose bundle must be present at `backend/models/pose_landmarker_full.task`; Next.js serves it to the browser at `/api/pose-model`. MediaPipe's browser WASM assets load from jsDelivr, so the browser needs network access on first load. Run the frontend at `http://localhost:3000`; run the backend for database persistence and quality-model inference.
 
-Therapist limits can now be saved to patient-specific PostgreSQL plans and loaded back into the live session. After each rep, a backend coaching layer compares the measured knee range, trunk lean, and asymmetry with those active limits and returns a cue that includes the measured value and prescribed boundary. This is plan-personalized rule feedback, not a separately trained patient-specific ML model. The Random Forest remains a general research advisory and its global feature importance is not a per-rep explanation. Live sessions can be saved to patient history; upload analyses and their rep results are also persisted. Database setup is in [SETUP.md](SETUP.md). Camera angle, visibility, and fixed rep-motion thresholds can affect estimates; therapist guidance remains authoritative. Authentication and access control are still outstanding.
+Therapist limits can be saved to patient-specific PostgreSQL plans and loaded into the live session. A backend coaching layer compares each rep with those limits and explains the measured value and prescribed boundary. This is plan-personalized rule feedback, not a separately trained patient-specific ML model. The Random Forest remains a general research advisory. Live sessions and upload analyses are persisted. JWT sign-in uses an HttpOnly cookie; therapists can access only their patients, while patient accounts can read their own plans and history. Email verification, password recovery, admin workflows, and a production security review remain outstanding. Database and authentication setup are in [SETUP.md](SETUP.md).
 
 ### Phase C: ML prototype status
 
@@ -72,7 +72,7 @@ python -m venv .venv
 npm run backend:install
 ```
 
-The browser live-feedback prototype works with the frontend and pose bundle; start the backend as well when using backend API features. For production frontend checks use `npm run build` from the repository root.
+The live-feedback app requires the frontend, backend, configured PostgreSQL database, and pose bundle. Camera frames are processed in the browser; only derived movement features and saved results are sent to the backend. See [SETUP.md](SETUP.md) for database and account setup.
 
 ### MediaPipe Test
 ```bash
@@ -90,7 +90,7 @@ python -c "import mediapipe as mp; from mediapipe.tasks import python; from medi
 | D | Core contribution: explainability, ROM customisation, decision layer |
 | E | Backend API: `/analyze`, model loading, structured JSON |
 | F | Frontend: dashboard, patients, plan editor, upload, results |
-| G | PostgreSQL persistence and history are implemented; auth and longitudinal progress remain |
+| G | PostgreSQL persistence, JWT sign-in, therapist patient ownership, and patient history are implemented; admin and longitudinal progress remain |
 | H | Validation: unseen people, camera angles, physiotherapist comparison |
 
 The phase table above describes the original upload/ML roadmap; live camera feedback is now being built as the primary interaction.
