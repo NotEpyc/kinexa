@@ -76,7 +76,8 @@ export default function SessionDetail({ analysisId, onClose }: { analysisId: str
           <h4>Measurements</h4>
           {Object.keys(rep.measurements ?? {}).length ? <dl>{Object.entries(rep.measurements).map(([key, value]) => <div key={key}><dt>{titleFor(key)}</dt><dd>{measurementValue(value)}</dd></div>)}</dl> : <p>No measurements were saved.</p>}
           {rep.issues?.length > 0 && <><h4>What was flagged</h4><ul>{rep.issues.map((issue, index) => <li key={index}>{typeof issue === 'string' ? issue : issue.message ?? issue.code ?? 'Movement issue'}</li>)}</ul></>}
-          {rep.advice?.length > 0 && <><h4>Personalized cue</h4><ul>{rep.advice.map((cue, index) => <li key={`${cue.code ?? 'cue'}-${index}`}>{cue.message}</li>)}</ul></>}
+          {rep.advice?.some((cue) => cue.source !== 'recent_sessions_and_therapist_plan') && <><h4>For this rep</h4><ul>{rep.advice.filter((cue) => cue.source !== 'recent_sessions_and_therapist_plan').map((cue, index) => <li key={`${cue.code ?? 'cue'}-${index}`}>{cue.message}</li>)}</ul></>}
+          {rep.advice?.some((cue) => cue.source === 'recent_sessions_and_therapist_plan') && <><h4>Repeated pattern across recent sessions</h4><ul>{rep.advice.filter((cue) => cue.source === 'recent_sessions_and_therapist_plan').map((cue, index) => <li key={`${cue.code ?? 'trend'}-${index}`}>{cue.message}</li>)}</ul></>}
           {rep.ml && <p className="session-detail-model">Model advisory: {String(rep.ml.prediction ?? rep.ml.label ?? 'available')}{rep.ml.confidence !== undefined ? ` · ${(Number(rep.ml.confidence) * 100).toFixed(0)}% confidence` : ''}. Not a clinical verdict.</p>}
         </article>)}</div>}
         <p className="session-detail-disclaimer">These saved measurements and cues are movement feedback based on the session’s recorded plan. They are not a medical diagnosis.</p>

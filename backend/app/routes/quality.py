@@ -10,8 +10,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.advice import personalized_advice
-from app.db import ExercisePlan, Patient, PatientExerciseParameter, User, get_db
+from app.advice import personalized_advice, trend_advice
+from app.db import Analysis, ExercisePlan, Patient, PatientExerciseParameter, RepResultRecord, User, get_db
 from app.features.registry import EXERCISE_FEATURE_SCHEMAS, get_feature_schema
 from app.models.loader import get_model_loader
 from app.security import require_patient_access, get_current_user
@@ -150,11 +150,27 @@ def coach_rep(request: CoachRequest, db: Session = Depends(get_db), user: User =
         PatientExerciseParameter.effective_from <= datetime.now(timezone.utc),
     )))
     advice = personalized_advice(request.measurements, parameters)
+    recent_analyses = list(db.scalars(select(Analysis).where(
+        Analysis.patient_id == request.patient_id,
+        Analysis.exercise == request.exercise,
+    ).order_by(Analysis.created_at.desc()).limit(8)))
+    recent_sessions: list[list[dict[str, Any]]] = []
+    for analysis in recent_analyses:
+        saved_reps = list(db.scalars(select(RepResultRecord).where(
+            RepResultRecord.analysis_id == analysis.id,
+        ).order_by(RepResultRecord.rep_index)))
+        if saved_reps:
+            recent_sessions.append([{"measurements": rep.measurements} for rep in saved_reps])
+        if len(recent_sessions) >= 3:
+            break
+    historical_advice = trend_advice(recent_sessions, parameters)
     return {
         "personalized": True,
         "plan_id": plan.id,
         "parameter_versions": {p.id: p.version for p in parameters},
         "advice": advice,
-        "message": "Your rep is within the currently configured plan limits." if not advice else None,
-        "scope": "Therapist-plan comparisons use measured movement. The ML model remains a separate general research advisory.",
+        "trend_advice": historical_advice,
+        "trend_sessions_reviewed": len(recent_sessions),
+        "message": "Your rep is within the currently configured plan limits." if not advice and not historical_advice else None,
+        "scope": "Rep cues compare movement with the active therapist plan. Trend cues require recurring measured exceptions across at least two saved sessions. The ML model remains a separate general research advisory.",
     }

@@ -117,7 +117,8 @@ async function requestPatientAdvice(exercise: string, patientId: string, measure
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.detail || 'Could not load patient-specific advice.');
-  return result as { personalized: boolean; plan_id: string | null; advice: Rep['advice']; message?: string };
+  const coaching = result as { personalized: boolean; plan_id: string | null; advice: Rep['advice']; trend_advice?: Rep['advice']; message?: string };
+  return { ...coaching, advice: [...coaching.advice, ...(coaching.trend_advice ?? [])] };
 }
 
 export default function LiveSession() {

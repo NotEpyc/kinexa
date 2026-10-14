@@ -1,5 +1,7 @@
 """Evidence-linked coaching advice from patient plan limits and rep measurements."""
 
+import math
+import re
 from typing import Any
 
 
@@ -62,3 +64,84 @@ def personalized_advice(measurements: list[dict[str, Any]], parameters: list[Any
             "message": message,
         })
     return advice
+
+
+def trend_advice(recent_sessions: list[list[dict[str, Any]]], parameters: list[Any]) -> list[dict[str, Any]]:
+    """Flag repeated out-of-plan patterns across recent saved sessions.
+
+    A pattern is reported only when it appears in at least two distinct sessions
+    and in at least half of the measurable reps for that metric in each session.
+    Historical values are compared with the currently active therapist plan.
+    """
+    if len(recent_sessions) < 2:
+        return []
+
+    repeated: list[dict[str, Any]] = []
+    for parameter in parameters:
+        metric = str(parameter.metric)
+        phase = str(parameter.phase)
+        side = str(parameter.side)
+        pattern = re.compile(rf"^{re.escape(metric)}_(left|right|either)_{re.escape(phase)}$")
+        flagged_sessions = 0
+        directions: list[str] = []
+        for session_reps in recent_sessions:
+            measured = 0
+            outside = 0
+            session_directions: list[str] = []
+            for rep in session_reps:
+                measurements = rep.get("measurements")
+                if not isinstance(measurements, dict):
+                    continue
+                values: list[float] = []
+                for key, raw in measurements.items():
+                    match = pattern.fullmatch(str(key))
+                    if not match or (side != "either" and match.group(1) not in (side, "either")):
+                        continue
+                    raw_value = raw.get("value") if isinstance(raw, dict) else raw
+                    try:
+                        value = float(raw_value)
+                        if math.isfinite(value):
+                            values.append(value)
+                    except (TypeError, ValueError):
+                        continue
+                if not values:
+                    continue
+                measured += 1
+                # For bilateral values, either side being outside counts as a flagged rep.
+                minimum = parameter.min_value
+                maximum = parameter.max_value
+                tolerance = float(parameter.tolerance or 0.0)
+                states = [
+                    "below" if minimum is not None and value < minimum - tolerance
+                    else "above" if maximum is not None and value > maximum + tolerance
+                    else "within"
+                    for value in values
+                ]
+                if any(state != "within" for state in states):
+                    outside += 1
+                    session_directions.extend(state for state in states if state != "within")
+            if measured and outside / measured >= 0.5:
+                flagged_sessions += 1
+                directions.extend(session_directions)
+
+        if flagged_sessions < 2:
+            continue
+        direction = max(("below", "above"), key=directions.count) if directions else "outside"
+        label = METRIC_LABELS.get(metric, metric.replace("_", " "))
+        if direction == "below":
+            boundary = f"below {parameter.min_value:g}{parameter.unit}" if parameter.min_value is not None else "below the prescribed range"
+        elif direction == "above":
+            boundary = f"above {parameter.max_value:g}{parameter.unit}" if parameter.max_value is not None else "above the prescribed range"
+        else:
+            boundary = "outside the prescribed range"
+        repeated.append({
+            "code": f"repeated_{metric}_{side}_{phase}",
+            "source": "recent_sessions_and_therapist_plan",
+            "metric": metric,
+            "side": side,
+            "phase": phase,
+            "sessions_flagged": flagged_sessions,
+            "sessions_reviewed": len(recent_sessions),
+            "message": f"Recent sessions show {label} {boundary} in at least half of measurable reps in {flagged_sessions} of {len(recent_sessions)} sessions. Review this movement with your therapist; keep following your current prescribed range.",
+        })
+    return repeated
