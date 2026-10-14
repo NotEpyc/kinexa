@@ -33,6 +33,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
 def _account_response(user: User) -> dict:
     return {"id": user.id, "email": user.email, "name": user.name, "role": user.role, "patient_id": user.patient_id}
 
@@ -69,3 +74,12 @@ def logout(response: Response):
 @router.get("/auth/me")
 def current_account(user: User = Depends(get_current_user)):
     return _account_response(user)
+
+
+@router.post("/auth/change-password")
+def change_password(request: ChangePasswordRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    if not verify_password(request.current_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    user.password_hash = hash_password(request.new_password)
+    db.commit()
+    return {"password_changed": True, "message": "Password updated. Your current session remains active."}

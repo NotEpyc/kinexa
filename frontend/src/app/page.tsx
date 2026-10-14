@@ -6,6 +6,29 @@ import LiveSession from './live-session';
 type Account = { id: string; name: string; email: string; role: string; patient_id?: string | null };
 type HistoryItem = { analysis_id: string; exercise: string; source: string; score: number; total_reps: number; created_at: string };
 
+function AccountControls({ label, onSignOut }: { label: string; onSignOut: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+
+  const updatePassword = async (event: FormEvent) => {
+    event.preventDefault(); setError(''); setMessage('');
+    try {
+      const response = await fetch('/api/backend/auth/change-password', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not change password.');
+      setMessage('Password updated.'); setCurrentPassword(''); setNewPassword('');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not change password.'); }
+  };
+
+  return <div className="account-controls"><div className="auth-session-bar"><span>{label}</span><button type="button" onClick={() => { setOpen(!open); setMessage(''); setError(''); }}>Change password</button><button type="button" onClick={onSignOut}>Sign out</button></div>{open && <form className="password-change" onSubmit={updatePassword}><label>Current password<input type="password" required autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label><label>New password (12+ characters)<input type="password" required minLength={12} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label><button type="submit">Update password</button>{message && <span role="status">{message}</span>}{error && <span role="alert">{error}</span>}</form>}</div>;
+}
+
 export default function Home() {
   const [account, setAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
@@ -65,7 +88,7 @@ export default function Home() {
 
   if (account?.role === 'patient') return (
     <main className="patient-home">
-      <header className="auth-session-bar"><span>Patient account · <b>{account.name}</b></span><button type="button" onClick={signOut}>Sign out</button></header>
+      <AccountControls label={`Patient account · ${account.name}`} onSignOut={signOut} />
       <section className="patient-history"><p className="eyebrow">KINEXA · YOUR MOVEMENT HISTORY</p><h1>Welcome, {account.name}</h1><p className="lede">Your therapist’s prescribed plans and saved exercise sessions appear here.</p>
         {historyError && <p role="alert" className="error-banner">{historyError}</p>}
         {!history.length && !historyError ? <p>No saved sessions yet.</p> : <ul>{history.map((item) => <li key={item.analysis_id}><span><b>{item.exercise}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span>{item.total_reps} reps</span><strong>{item.score}%</strong></li>)}</ul>}
@@ -93,5 +116,5 @@ export default function Home() {
     </main>
   );
 
-  return account ? <><div className="auth-session-bar"><span>Signed in as <b>{account.name}</b> · {account.email}</span><button type="button" onClick={signOut}>Sign out</button></div><LiveSession /></> : null;
+  return account ? <><AccountControls label={`Signed in as ${account.name} · ${account.email}`} onSignOut={signOut} /><LiveSession /></> : null;
 }

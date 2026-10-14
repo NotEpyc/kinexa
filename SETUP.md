@@ -95,7 +95,15 @@ On macOS/Linux, activate the virtual environment with `source .venv/bin/activate
 5. Open `http://localhost:8000/api/health`. Confirm the database status is `connected`. API docs are at `http://localhost:8000/docs`. The backend creates new tables at startup, including `users`; you do not need to run SQL scripts manually.
 6. Open the frontend and create a therapist account, or sign in. Use a password with at least 12 characters. After sign-in, create a patient under **Create a patient record**. Optionally provide a patient email and temporary password (12+ characters) to create a patient login. The therapist account can then set limits, choose **Save as plan**, and **Load plan**. After a live session, choose **Save session** to store its reps and results.
 
-JWT access tokens expire after 30 minutes and are held in an HttpOnly, same-site cookie. Sign in again after expiry. The therapist registration endpoint is open for this local prototype; email verification, password reset, invitation-only registration, and administrator accounts are not implemented. Patient accounts are created by their therapist. Existing patient rows whose `therapist_id` was a manually entered label are not automatically assigned to a new therapist account; have a database administrator verify and migrate those ownership values before using the records.
+JWT access tokens expire after 30 minutes and are held in an HttpOnly, same-site cookie. Sign in again after expiry. Users can change a password after signing in. The therapist registration endpoint is open for this local prototype; email verification, password reset, invitation-only registration, and administrator accounts are not implemented. Patient accounts are created by their therapist, who should provide an initial password and ask the patient to change it after sign-in.
+
+Older patient rows may have a manually entered `therapist_id`, so they are not automatically visible to newly registered accounts. After you verify which account owns a legacy ID, preview the reassignment from `backend/`:
+
+```powershell
+python -m scripts.migrate_legacy_patient_ownership --legacy-therapist-id "therapist-1" --therapist-email "therapist@example.com"
+```
+
+The command is dry-run by default and reports only the number of matching patients and target account. After verifying the mapping, add `--apply` to perform it. The patients' existing plans and analyses stay linked to their patient records.
 
 For a new patient through the API, sign in and call `POST /api/patients` with JSON such as `{"name":"Example patient"}`. The authenticated therapist account becomes the record owner; do not submit a therapist ID. Patient IDs are UUIDs. A therapist can create patient credentials with `POST /api/patients/{patient_id}/account` and JSON containing an email and initial password. The database stores profile fields, plan parameter versions, per-rep measurements/advice/model output, result history, and a constraints snapshot for each analysis. Uploaded videos are processed temporarily and removed; no video bytes are retained.
 
