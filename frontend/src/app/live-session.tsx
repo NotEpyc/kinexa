@@ -5,6 +5,7 @@ import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { getLiveExercise, LIVE_EXERCISES } from '@/lib/exercises';
 import SessionProgress, { type ProgressSession } from '@/components/session-progress';
+import SessionDetail from '@/components/session-detail';
 import type { ExerciseReadiness } from '@/lib/exercises';
 import type { KneeAngleSample } from '@/lib/exercises/bilateral-knee-strategy';
 
@@ -164,6 +165,7 @@ export default function LiveSession() {
   const [patientId, setPatientId] = useState('');
   const [patients, setPatients] = useState<PatientRow[]>([]);
   const [patientHistory, setPatientHistory] = useState<SavedSession[]>([]);
+  const [selectedHistoryAnalysisId, setSelectedHistoryAnalysisId] = useState('');
   const [historyLoaded, setHistoryLoaded] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [newPatientName, setNewPatientName] = useState('');
@@ -675,7 +677,7 @@ export default function LiveSession() {
             <div className="patient-plan-controls"><label>Patient<select value={patientId} disabled={running} onChange={(event) => { setPatientId(event.target.value); setSavedPlanLoaded(false); setPatientHistory([]); setHistoryLoaded(false); setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry(''); }}><option value="">Choose a patient</option>{patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.name}</option>)}</select></label><div><button type="button" onClick={loadPatientPlan} disabled={running || !patientId}>Load plan</button><button type="button" onClick={savePatientPlan} disabled={running || !patientId}>Save as plan</button><button type="button" onClick={loadPatientHistory} disabled={running || historyLoading || !patientId}>{historyLoading ? 'Loading…' : 'History'}</button></div></div>
             <details className="new-patient"><summary>Create a patient record and optional login</summary><div><input value={newPatientName} disabled={running} onChange={(event) => setNewPatientName(event.target.value)} placeholder="Patient name"/><input type="email" value={newPatientEmail} disabled={running} onChange={(event) => setNewPatientEmail(event.target.value)} placeholder="Patient email (optional)"/><input type="password" value={newPatientPassword} disabled={running} onChange={(event) => setNewPatientPassword(event.target.value)} placeholder="Temporary password (12+ chars)"/><button type="button" onClick={createPatient} disabled={running}>Create patient</button></div></details>
             {databaseMessage && <p className="database-message" role="status">{databaseMessage}</p>}
-            {patientId && historyLoaded && <details className="saved-history" open><summary>Saved sessions · {patientHistory.length}</summary>{patientHistory.length ? <><SessionProgress sessions={patientHistory} /><ul>{patientHistory.map((session) => <li key={session.analysis_id}><span><b>{session.exercise}</b><small>{new Date(session.created_at).toLocaleString()}</small></span><span>{session.total_reps} reps</span><strong>{session.score}%</strong></li>)}</ul></> : <p>No saved sessions yet.</p>}</details>}
+            {patientId && historyLoaded && <details className="saved-history" open><summary>Saved sessions · {patientHistory.length}</summary>{patientHistory.length ? <><SessionProgress sessions={patientHistory} /><ul>{patientHistory.map((session) => <li key={session.analysis_id}><span><b>{session.exercise}</b><small>{new Date(session.created_at).toLocaleString()}</small></span><span>{session.total_reps} reps</span><strong>{session.score}%</strong><button type="button" className="session-open-button" onClick={() => setSelectedHistoryAnalysisId(session.analysis_id)}>Review</button></li>)}</ul>{selectedHistoryAnalysisId && <SessionDetail analysisId={selectedHistoryAnalysisId} onClose={() => setSelectedHistoryAnalysisId('')} />}</> : <p>No saved sessions yet.</p>}</details>}
             <div className="range-inputs">
               <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => { setKneeAngleConvention(e.target.value as KneeAngleConvention); setSavedPlanLoaded(false); }}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
               <label>Minimum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => { setMinAngle(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>

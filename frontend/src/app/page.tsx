@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import LiveSession from './live-session';
 import SessionProgress, { type ProgressSession } from '@/components/session-progress';
+import SessionDetail from '@/components/session-detail';
 
 type Account = { id: string; name: string; email: string; role: string; patient_id?: string | null };
 type HistoryItem = ProgressSession;
@@ -40,6 +41,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [historyError, setHistoryError] = useState('');
+  const [selectedAnalysisId, setSelectedAnalysisId] = useState('');
 
   useEffect(() => {
     fetch('/api/backend/auth/me', { credentials: 'same-origin', cache: 'no-store' })
@@ -93,7 +95,8 @@ export default function Home() {
       <section className="patient-history"><p className="eyebrow">KINEXA · YOUR MOVEMENT HISTORY</p><h1>Welcome, {account.name}</h1><p className="lede">Your therapist’s prescribed plans and saved exercise sessions appear here.</p>
         {historyError && <p role="alert" className="error-banner">{historyError}</p>}
         {!historyError && history.length > 1 && <SessionProgress sessions={history} />}
-        {!history.length && !historyError ? <p>No saved sessions yet.</p> : <ul>{history.map((item) => <li key={item.analysis_id}><span><b>{item.exercise}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span>{item.total_reps} reps</span><strong>{item.score}%</strong></li>)}</ul>}
+        {!history.length && !historyError ? <p>No saved sessions yet.</p> : <ul>{history.map((item) => <li key={item.analysis_id}><span><b>{item.exercise}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span>{item.total_reps} reps</span><strong>{item.score}%</strong><button type="button" className="session-open-button" onClick={() => setSelectedAnalysisId(item.analysis_id)}>Review reps</button></li>)}</ul>}
+        {selectedAnalysisId && <SessionDetail analysisId={selectedAnalysisId} onClose={() => setSelectedAnalysisId('')} />}
       </section>
     </main>
   );
