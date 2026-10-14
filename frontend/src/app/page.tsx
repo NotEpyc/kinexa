@@ -2,9 +2,10 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import LiveSession from './live-session';
+import SessionProgress, { type ProgressSession } from '@/components/session-progress';
 
 type Account = { id: string; name: string; email: string; role: string; patient_id?: string | null };
-type HistoryItem = { analysis_id: string; exercise: string; source: string; score: number; total_reps: number; created_at: string };
+type HistoryItem = ProgressSession;
 
 function AccountControls({ label, onSignOut }: { label: string; onSignOut: () => void }) {
   const [open, setOpen] = useState(false);
@@ -91,6 +92,7 @@ export default function Home() {
       <AccountControls label={`Patient account · ${account.name}`} onSignOut={signOut} />
       <section className="patient-history"><p className="eyebrow">KINEXA · YOUR MOVEMENT HISTORY</p><h1>Welcome, {account.name}</h1><p className="lede">Your therapist’s prescribed plans and saved exercise sessions appear here.</p>
         {historyError && <p role="alert" className="error-banner">{historyError}</p>}
+        {!historyError && history.length > 1 && <SessionProgress sessions={history} />}
         {!history.length && !historyError ? <p>No saved sessions yet.</p> : <ul>{history.map((item) => <li key={item.analysis_id}><span><b>{item.exercise}</b><small>{new Date(item.created_at).toLocaleString()}</small></span><span>{item.total_reps} reps</span><strong>{item.score}%</strong></li>)}</ul>}
       </section>
     </main>
