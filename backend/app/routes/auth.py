@@ -25,7 +25,7 @@ def _set_access_cookie(response: Response, token: str) -> None:
 class RegisterRequest(BaseModel):
     email: str = Field(min_length=5, max_length=320, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     name: str = Field(min_length=1, max_length=200)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=8, max_length=128)
 
 
 class LoginRequest(BaseModel):

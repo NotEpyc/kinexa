@@ -110,8 +110,8 @@ export default function Home() {
         <p className="lede">Sign in to manage your patients and their exercise plans.</p>
         {register && <label>Your name<input autoComplete="name" required value={name} onChange={(event) => setName(event.target.value)} /></label>}
         <label>Email<input type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /></label>
-        <label>Password<input type="password" autoComplete={register ? 'new-password' : 'current-password'} minLength={register ? 12 : 1} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-        {register && <small>Use at least 12 characters. Store your password safely; account recovery is not available yet.</small>}
+        <label>Password<input type="password" autoComplete={register ? 'new-password' : 'current-password'} minLength={register ? 8 : 1} required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+        {register && <small>Use at least 8 characters. Store your password safely; account recovery is not available yet.</small>}
         {error && <p className="error-banner" role="alert">{error}</p>}
         <button className="button" type="submit">{register ? 'Create account' : 'Sign in'}<span aria-hidden="true">↗</span></button>
         <button className="auth-toggle" type="button" onClick={() => { setRegister(!register); setError(''); }}>
