@@ -24,6 +24,8 @@ type Rep = {
   end_s: number;
   model: { status: 'checking' | 'available' | 'unavailable' | 'skipped'; prediction?: string | number; task?: string; confidence?: number; version?: string; reason?: string };
 };
+type PatientRow = { id: string; name: string; age: number | null; created_at: string };
+type SavedSession = { analysis_id: string; exercise: string; source: string; score: number; total_reps: number; created_at: string };
 
 async function authenticatedFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
@@ -159,6 +161,10 @@ export default function LiveSession() {
   const [readinessReason, setReadinessReason] = useState(EXERCISE.readinessMessage);
   const [reps, setReps] = useState<Rep[]>([]);
   const [patientId, setPatientId] = useState('');
+  const [patients, setPatients] = useState<PatientRow[]>([]);
+  const [patientHistory, setPatientHistory] = useState<SavedSession[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [newPatientName, setNewPatientName] = useState('');
   const [newPatientEmail, setNewPatientEmail] = useState('');
   const [newPatientPassword, setNewPatientPassword] = useState('');
@@ -168,6 +174,20 @@ export default function LiveSession() {
   const [detectorLogs, setDetectorLogs] = useState<DetectorLog[]>([]);
   const [angleHistory, setAngleHistory] = useState<AngleHistoryPoint[]>([]);
   const [repMarkers, setRepMarkers] = useState<number[]>([]);
+
+  const refreshPatients = useCallback(async (selectPatientId?: string) => {
+    const response = await authenticatedFetch('/api/backend/patients', { cache: 'no-store' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || 'Could not load your patients.');
+    setPatients(result as PatientRow[]);
+    if (selectPatientId) setPatientId(selectPatientId);
+  }, []);
+
+  useEffect(() => {
+    void refreshPatients().catch((reason: unknown) => {
+      setDatabaseMessage(reason instanceof Error ? reason.message : 'Could not load your patients.');
+    });
+  }, [refreshPatients]);
 
   useEffect(() => {
     let cancelled = false;
@@ -223,7 +243,7 @@ export default function LiveSession() {
   }, []);
 
   const loadPatientPlan = async () => {
-    if (!patientId.trim()) { setDatabaseMessage('Enter a patient ID first.'); return; }
+    if (!patientId.trim()) { setDatabaseMessage('Choose a patient first.'); return; }
     setSavedPlanLoaded(false);
     setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry('');
     setDatabaseMessage('Loading saved therapist plan…');
@@ -253,6 +273,21 @@ export default function LiveSession() {
     } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not load patient plan.'); }
   };
 
+  const loadPatientHistory = async () => {
+    if (!patientId) { setDatabaseMessage('Choose a patient to view their history.'); return; }
+    setHistoryLoading(true);
+    setHistoryLoaded(false);
+    try {
+      const response = await authenticatedFetch(`/api/backend/patients/${encodeURIComponent(patientId)}/analyses`, { cache: 'no-store' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not load patient history.');
+      setPatientHistory(result as SavedSession[]);
+      setHistoryLoaded(true);
+    } catch (reason) {
+      setDatabaseMessage(reason instanceof Error ? reason.message : 'Could not load patient history.');
+    } finally { setHistoryLoading(false); }
+  };
+
   const createPatient = async () => {
     if (!newPatientName.trim()) { setDatabaseMessage('Enter a patient name to create a patient record.'); return; }
     if ((newPatientEmail.trim() || newPatientPassword) && (!newPatientEmail.trim() || newPatientPassword.length < 12)) { setDatabaseMessage('To create a patient login, provide an email and a password of at least 12 characters.'); return; }
@@ -260,8 +295,10 @@ export default function LiveSession() {
       const response = await authenticatedFetch('/api/backend/patients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newPatientName.trim() }) });
       const patient = await response.json();
       if (!response.ok) throw new Error(patient.detail || 'Could not create patient.');
-      setPatientId(patient.id);
+      await refreshPatients(patient.id);
       setSavedPlanLoaded(false);
+      setPatientHistory([]);
+      setHistoryLoaded(false);
       if (newPatientEmail.trim()) {
         const accountResponse = await authenticatedFetch(`/api/backend/patients/${encodeURIComponent(patient.id)}/account`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: newPatientEmail.trim(), password: newPatientPassword }) });
         const accountResult = await accountResponse.json();
@@ -275,7 +312,7 @@ export default function LiveSession() {
   };
 
   const savePatientPlan = async () => {
-    if (!patientId.trim()) { setDatabaseMessage('Enter an existing patient ID first.'); return; }
+    if (!patientId.trim()) { setDatabaseMessage('Choose a patient first.'); return; }
     if ((minAngle === '') !== (maxAngle === '')) { setDatabaseMessage('Enter both knee limits before saving the plan.'); return; }
     setDatabaseMessage('Saving therapist plan…');
     try {
@@ -314,6 +351,7 @@ export default function LiveSession() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Could not save live session.');
       setDatabaseMessage(`Session saved (${result.analysis_id}); ${result.saved_reps} reps stored.`);
+      void loadPatientHistory();
     } catch (error) { setDatabaseMessage(error instanceof Error ? error.message : 'Could not save live session.'); }
     finally { setSavingSession(false); }
   };
@@ -633,9 +671,10 @@ export default function LiveSession() {
           <div className="rom-panel">
             <div className="rom-title"><div><p className="eyebrow">PERSONAL RANGE</p><h3>Therapist-set ROM</h3></div><span className="lock-tag">POSTGRESQL</span></div>
             <p className="rom-copy">Load or save this patient’s active therapist plan. Advice compares each rep’s measured values with the saved limits; the ML signal stays a separate general advisory.</p>
-            <div className="patient-plan-controls"><label>Patient ID<input value={patientId} disabled={running} onChange={(event) => { setPatientId(event.target.value); setSavedPlanLoaded(false); setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry(''); }} placeholder="Existing patient ID"/></label><div><button type="button" onClick={loadPatientPlan} disabled={running}>Load plan</button><button type="button" onClick={savePatientPlan} disabled={running}>Save as plan</button></div></div>
+            <div className="patient-plan-controls"><label>Patient<select value={patientId} disabled={running} onChange={(event) => { setPatientId(event.target.value); setSavedPlanLoaded(false); setPatientHistory([]); setHistoryLoaded(false); setMinAngle(''); setMaxAngle(''); setMaxTrunkAngle(''); setMaxAsymmetry(''); }}><option value="">Choose a patient</option>{patients.map((patient) => <option key={patient.id} value={patient.id}>{patient.name}</option>)}</select></label><div><button type="button" onClick={loadPatientPlan} disabled={running || !patientId}>Load plan</button><button type="button" onClick={savePatientPlan} disabled={running || !patientId}>Save as plan</button><button type="button" onClick={loadPatientHistory} disabled={running || historyLoading || !patientId}>{historyLoading ? 'Loading…' : 'History'}</button></div></div>
             <details className="new-patient"><summary>Create a patient record and optional login</summary><div><input value={newPatientName} disabled={running} onChange={(event) => setNewPatientName(event.target.value)} placeholder="Patient name"/><input type="email" value={newPatientEmail} disabled={running} onChange={(event) => setNewPatientEmail(event.target.value)} placeholder="Patient email (optional)"/><input type="password" value={newPatientPassword} disabled={running} onChange={(event) => setNewPatientPassword(event.target.value)} placeholder="Temporary password (12+ chars)"/><button type="button" onClick={createPatient} disabled={running}>Create patient</button></div></details>
             {databaseMessage && <p className="database-message" role="status">{databaseMessage}</p>}
+            {patientId && historyLoaded && <details className="saved-history" open><summary>Saved sessions · {patientHistory.length}</summary>{patientHistory.length ? <ul>{patientHistory.map((session) => <li key={session.analysis_id}><span><b>{session.exercise}</b><small>{new Date(session.created_at).toLocaleString()}</small></span><span>{session.total_reps} reps</span><strong>{session.score}%</strong></li>)}</ul> : <p>No saved sessions yet.</p>}</details>}
             <div className="range-inputs">
               <label>Knee angle format<select value={kneeAngleConvention} disabled={running} onChange={(e) => { setKneeAngleConvention(e.target.value as KneeAngleConvention); setSavedPlanLoaded(false); }}><option value="joint_angle">Inside knee angle · 180° straight</option><option value="flexion">Flexion from straight · 0° straight</option></select></label>
               <label>Minimum allowed angle at target <span><input type="number" min={kneeAngleConvention === 'flexion' ? 0 : 30} max={kneeAngleConvention === 'flexion' ? 150 : 180} placeholder={kneeAngleConvention === 'flexion' ? 'e.g. 50' : 'e.g. 105'} value={minAngle} disabled={running} onChange={(e) => { setMinAngle(e.target.value); setSavedPlanLoaded(false); }}/>°</span></label>
