@@ -340,7 +340,14 @@ export default function LiveSession() {
   };
 
   const saveLiveSession = async () => {
-    if (!patientId.trim() || !reps.length) return;
+    if (!patientId.trim()) {
+      setDatabaseMessage('Choose a patient above before saving this session.');
+      return;
+    }
+    if (!reps.length) {
+      setDatabaseMessage('There are no completed reps to save yet.');
+      return;
+    }
     setSavingSession(true); setDatabaseMessage('Saving live session…');
     try {
       const correct = reps.filter((rep) => rep.verdict === 'within range').length;
