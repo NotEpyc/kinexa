@@ -106,6 +106,7 @@ The phase table above describes the original upload/ML roadmap; live camera feed
 
 - [PRD.md](PRD.md) — Product Requirements Document (v1.1)
 - [AGENTS.md](AGENTS.md) — Agent instructions & development commands
+- [SETUP.md](SETUP.md) — Local frontend/backend setup and PostgreSQL connection instructions
 
 ## License
 

@@ -7,7 +7,7 @@
 - **Git**
 - **Windows/Linux/macOS**
 
-PostgreSQL is used for patient profiles, therapist plans and limits, uploaded analyses, and saved live sessions. Install PostgreSQL and create a database named `kinexa` before using those features. The camera-only experience can still start without PostgreSQL, but persistence endpoints will report that the database is unavailable.
+PostgreSQL is used for patient profiles, therapist plans and limits, uploaded analyses, and saved live sessions. Install PostgreSQL and create a database named `kinexa` before using those features. The camera-only experience can still start without PostgreSQL, but persistence endpoints will report that the database is unavailable. The repo includes a safe `.env.example`; copy it to `.env` and add your own database credentials before starting the backend.
 
 ## Quick Start
 
@@ -22,6 +22,8 @@ Open **http://localhost:3000** and allow camera access. Live squat feedback runs
 
 ### Optional: start the FastAPI backend
 
+For database-backed features, complete [PostgreSQL Setup](#postgresql-setup) first. The backend loads `DATABASE_URL` from the repository-root `.env`, including when Uvicorn is started from `backend/`.
+
 Use a second terminal from the repository root:
 
 ```bash
@@ -35,19 +37,53 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
-The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. The backend reads `DATABASE_URL`; on first startup it creates the v1 tables if PostgreSQL is available. Live pose tracking sends only derived movement features, not camera frames.
+The backend is available at **http://localhost:8000** and its API docs at **http://localhost:8000/docs**. On first startup it creates the v1 tables if PostgreSQL is available. Live pose tracking sends only derived movement features, not camera frames.
 
 ### PostgreSQL Setup
 
-1. Install PostgreSQL and create a database named `kinexa` (for example, in pgAdmin).
-2. Set the connection string using your PostgreSQL username and password. You can add this line to a root `.env` file (ignored by Git), or set it in the backend terminal:
+1. Install PostgreSQL and make sure its server/service is running on port `5432`.
+   - On Windows, open **Services** and start the PostgreSQL service if it is stopped. You can also check in PowerShell with `Get-Service *postgres*`.
+   - On macOS/Linux, start PostgreSQL using the service manager for your installation.
+2. Create a database named `kinexa` once. In pgAdmin, right-click **Databases → Create → Database** and enter `kinexa`. Or use a terminal where PostgreSQL command-line tools are on `PATH`:
 
-```powershell
-$env:DATABASE_URL = "postgresql+psycopg://postgres:YOUR_PASSWORD@localhost:5432/kinexa"
+```sh
+createdb -h localhost -p 5432 -U postgres kinexa
 ```
 
-3. Install backend requirements and start Uvicorn in that same terminal. Check `http://localhost:8000/api/health`; `database` should be `connected`.
-4. Create a patient on the live page under **Create a patient record**, or through `POST /api/patients`. Enter the returned patient ID, set therapist ranges, and choose **Save as plan**. **Load plan** restores saved limits. After a live session, choose **Save session** to store its reps and results.
+3. From the repository root, create your private environment file:
+
+```powershell
+# Windows PowerShell
+Copy-Item .env.example .env
+```
+
+```sh
+# macOS/Linux
+cp .env.example .env
+```
+
+Open `.env` and replace `YOUR_POSTGRES_PASSWORD` with the password for your PostgreSQL user. Keep `.env` private; Git ignores it. The checked-in `.env.example` contains placeholders only. If your password includes URL-reserved characters such as `@`, `:`, `/`, or `#`, URL-encode those characters in the connection string.
+
+The connection string format is:
+
+```text
+postgresql+psycopg://USERNAME:PASSWORD@localhost:5432/kinexa
+```
+
+For example, keep the username as `postgres` if that is the account created by your installer, or substitute your own PostgreSQL role name. The URL must use the `postgresql+psycopg` driver prefix.
+
+4. Install backend requirements and start Uvicorn:
+
+```powershell
+cd backend
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --reload
+```
+
+On macOS/Linux, activate the virtual environment with `source .venv/bin/activate` instead of the PowerShell activation command shown in Quick Start. If the backend environment does not exist yet, create and activate it using the Quick Start instructions before installing requirements.
+
+5. Open `http://localhost:8000/api/health`. Confirm the database status is `connected`. API docs are at `http://localhost:8000/docs`. The backend creates the application tables at startup; you do not need to run SQL scripts manually.
+6. Create a patient on the live page under **Create a patient record**, or through `POST /api/patients`. Enter the returned patient ID, set therapist ranges, and choose **Save as plan**. **Load plan** restores saved limits. After a live session, choose **Save session** to store its reps and results.
 
 For a new patient through the API, use `POST /api/patients` with JSON such as `{"therapist_id":"therapist-1","name":"Example patient"}`. Patient IDs are UUIDs. The database stores profile fields, plan parameter versions, per-rep measurements/advice/model output, result history, and a constraints snapshot for each analysis. Uploaded videos are processed temporarily and removed; no video bytes are retained.
 
@@ -204,7 +240,9 @@ kinexa/
 
 | Issue | Solution |
 |-------|----------|
-| `database: unavailable` | Start PostgreSQL, check that the `kinexa` database exists, and verify `DATABASE_URL` |
+| `database: unavailable` | Confirm the PostgreSQL service is running, the `kinexa` database exists, and root `.env` has a valid `DATABASE_URL`; restart Uvicorn after changing `.env` |
+| `password authentication failed` | Check the PostgreSQL username/password in `.env`; URL-encode reserved password characters |
+| `connection refused` | Start the PostgreSQL service and confirm the host/port (`localhost:5432`) in `.env` |
 | `Microsoft Visual C++ 14.0 required` | Install [VS Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) or use `--only-binary :all:` |
 | `MediaPipe model not found` | Run `python download_model.py` |
 | `No module named 'mediapipe'` | `pip install mediapipe==0.10.35` |
