@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
-import { getLiveExercise, LIVE_EXERCISES } from '@/lib/exercises';
-import SessionProgress, { type ProgressSession } from '@/components/session-progress';
-import SessionDetail from '@/components/session-detail';
-import type { ExerciseReadiness } from '@/lib/exercises';
-import type { KneeAngleSample } from '@/lib/exercises/bilateral-knee-strategy';
+import { getLiveExercise, LIVE_EXERCISES } from '../lib/exercises';
+import SessionProgress, { type ProgressSession } from '../components/session-progress';
+import SessionDetail from '../components/session-detail';
+import type { ExerciseReadiness } from '../lib/exercises';
+import type { KneeAngleSample } from '../lib/exercises/bilateral-knee-strategy';
 
 type Point = { x: number; y: number; z: number; visibility?: number };
 type Rep = {

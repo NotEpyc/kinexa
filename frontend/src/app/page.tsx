@@ -2,8 +2,8 @@
 
 import { FormEvent, useEffect, useState } from 'react';
 import LiveSession from './live-session';
-import SessionProgress, { type ProgressSession } from '@/components/session-progress';
-import SessionDetail from '@/components/session-detail';
+import SessionProgress, { type ProgressSession } from '../components/session-progress';
+import SessionDetail from '../components/session-detail';
 
 type Account = { id: string; name: string; email: string; role: string; patient_id?: string | null };
 type HistoryItem = ProgressSession;
